@@ -181,7 +181,21 @@ ticket, and reloading the page repeats nothing. An unknown or malformed key is n
 **Test runs** lists every run of the platform test, newest first, queued and running ones included. Each opens at
 `/qa/<n>/`: before its report, as where the run is (queued, and for what; under way, with its step, the agent's
 activity and the same freshness marks as a task's page; the stop it was asked for), refreshing itself until the report
-is written; a finished run whose report is missing says so instead of showing a result. A finished one opens as its
+is written; a finished run whose report is missing says so instead of showing a result. Under way, the page also shows
+how long the run has been going and how long it waited in the queue, the time its agent stops testing to write the
+report and its time limit, each with what is left; a run still going past the limit is stopped on the runner's first
+pass after it. These are the times the run was given
+when it was prepared, the same ones its brief names and the runner stops it by. The run's page shows no estimate of
+when it ends: the limit is not an end time, and putting the workspace back and writing the report come after it. What
+the run is doing is said only from the runner's state and whose turn the engine reports (the agent's, the checks', or
+waiting for the engine), never from the plan or the clock. Beside
+the times is the agent's test plan as the runner last counted it: checks done out of all of them (a check that found a
+problem is done), each result's count, the checks not done yet, whether the plan grew since it was first counted, and
+when it was counted. The runner reads `plan.md` in the workspace on each pass and keeps only the counts with the run,
+because the console cannot see the workspace and the plan goes with it. A plan not written yet, not in its form, or
+unreadable is said so, never shown as numbers. The stop button refreshes with the page and goes once the run is over
+or a stop was asked. When the console has not answered for two rounds, whether its answers fail or never come, a notice says since when
+the page has not updated; a request that hangs is given up after one round, so they never pile up. A finished one opens as its
 report: the verdict, what was checked, each problem with its steps, its screenshots and videos
 at the step they show, expected against actual and the suspected cause with links into the code. The list stays
 when `qa.enabled` is false; it says that none start. Only the report's own files are served: a run's media by its

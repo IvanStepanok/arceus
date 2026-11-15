@@ -27,7 +27,8 @@ import json
 import os
 import re
 import shutil
-from datetime import datetime, timedelta
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from arceus_runner.code_review import ReviewAgent
@@ -260,12 +261,18 @@ class WorkspaceRun:
         folder = self.run_dir(run)
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "instructions.md").write_text(text, encoding="utf-8")
+        # The run's clock starts here and its times are fixed now: the brief names them, the runner stops the run by
+        # them and the console shows them, whatever config.yaml says later.
+        now = self.d.now().astimezone(timezone.utc)
+        until = self._test_until(now)
+        run = replace(run, started_at=now.isoformat(), deadline=(now + self.c.timeout).isoformat(),
+                      test_until=until.isoformat() if until else None)
         snapshot = {"branch": branch, "repos": repos, **extra, "text": self._compose(run, text, repos, extra),
                     "home_prev": self.git.current_branch(home) if (home / ".git").exists() else None,
                     "instructions": {"path": str(self.c.instructions), "bytes": len(text.encode()),
                                      "sha256": hashlib.sha256(text.encode()).hexdigest()}}
         run = self.store.update_run(run.id, state="preparing", snapshot=json.dumps(snapshot),
-                                    started_at=self.d.now().isoformat())
+                                    started_at=run.started_at, deadline=run.deadline, test_until=run.test_until)
         self._waiting.pop(run.id, None)
         self.emit("preparing", task_id=run.id, run=run.n, repos=len(repos),
                   not_switched=[r["repo"] for r in repos if not r["switch"]] or None)
@@ -296,7 +303,7 @@ class WorkspaceRun:
                                        text=snap["text"], clearance=trusted(snap["text"]), extra_dirs=extra,
                                        report_review=self._report_review(run))
         if reply.accepted:
-            self.store.update_run(run.id, state="running", started_at=self.d.now().isoformat())
+            self.store.update_run(run.id, state="running")
             self.emit("dispatched", task_id=run.id, run=run.n, source=run.source, by=run.requested_by,
                       tier=reply.tier, **self.cfg.bulava.model_profile())
         elif reply.rc == 6 and not self._overdue(run):
@@ -349,8 +356,18 @@ class WorkspaceRun:
         os.replace(tmp, link)
 
     def _overdue(self, run: AgentRun) -> bool:
+        """Past the time the run was given when it was prepared. A run prepared before runs kept their deadline
+        counts its timeout from its start."""
+        if run.deadline:
+            return self.d.now() > datetime.fromisoformat(run.deadline)
         started = datetime.fromisoformat(run.started_at) if run.started_at else self.d.now()
         return self.d.now() - started > self.c.timeout
+
+    def _given(self, run: AgentRun) -> timedelta:
+        """How long the run was given."""
+        if run.deadline and run.started_at:
+            return datetime.fromisoformat(run.deadline) - datetime.fromisoformat(run.started_at)
+        return self.c.timeout
 
     # -- following one ------------------------------------------------------------------------------
 
@@ -381,6 +398,7 @@ class WorkspaceRun:
         if show is None:
             self._settled(run, None, "the execution engine lost track of the run")
             return
+        run = self._note_progress(run)
         if self._review_pending(run):
             return
         state = show.get("state")
@@ -392,7 +410,7 @@ class WorkspaceRun:
             if state == "queued" or show.get("attempt_live"):
                 if self._overdue(run):
                     self.d.engine.stop(Path(self.cfg.paths.workspace))
-                    hours = self.c.timeout.total_seconds() / 3600
+                    hours = self._given(run).total_seconds() / 3600
                     self._settled(run, show, f"the run did not finish in {hours:g} h and was stopped")
                 return
             attempt = len(show.get("attempts") or [])
@@ -689,6 +707,16 @@ class WorkspaceRun:
 
     def _instructions(self) -> tuple[str | None, str]:
         return read_instructions(self.c.instructions)
+
+    def _test_until(self, start: datetime) -> datetime | None:
+        """When the kind's agent is told to stop its work and write the report, for a run that starts at `start`;
+        None for a kind that names no such time."""
+        return None
+
+    def _note_progress(self, run: AgentRun) -> AgentRun:
+        """What the kind keeps of the agent's progress while it works, read on every pass of a running run. Safe to
+        repeat; the run as it is after."""
+        return run
 
     def _scope(self, run: AgentRun, repos: list[dict]) -> tuple[dict, tuple[str, str] | None]:
         """What the run is to look at, kept in its snapshot; or the outcome and reason of a run with nothing to

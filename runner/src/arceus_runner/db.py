@@ -732,6 +732,20 @@ MIGRATIONS.append(
 )
 
 
+MIGRATIONS.append(
+    # 24: a background run's own clock and how far it has got (workspace_run.py). `deadline` is when the run is
+    # stopped and `test_until` when a test run's agent is told to stop testing and write its report: both fixed when
+    # the run is prepared, so the agent's brief, the runner's stop and the console's page give the same times however
+    # config.yaml changes later. `progress` (JSON) is what the runner last counted in a test run's plan.md, kept with
+    # the run because the console cannot read the workspace and the plan goes with it.
+    """
+    ALTER TABLE agent_runs ADD COLUMN deadline TEXT;
+    ALTER TABLE agent_runs ADD COLUMN test_until TEXT;
+    ALTER TABLE agent_runs ADD COLUMN progress TEXT;
+    """
+)
+
+
 TASK_FIELDS = ("task_id", "issue_db_id", "state", "summary", "tag_author", "repo", "repo_path", "branch",
                "base_branch", "question_id", "question_at_ms", "reason", "mr_urls", "attempt_started",
                "extra_repos", "review_rounds", "ci_attempts", "published_at_ms", "failed_at_ms",
@@ -1134,7 +1148,8 @@ class ReviewRequest:
 # has the shared workspace switched to the code it reads.
 RUN_HOLDS = ("preparing", "running", "reviewing", "restoring")
 RUN_UNDER_WAY = ("pending", *RUN_HOLDS, "publishing")
-RUN_FIELDS = ("state", "stop_requested", "snapshot", "result", "outcome", "reason", "started_at", "finished_at")
+RUN_FIELDS = ("state", "stop_requested", "snapshot", "result", "outcome", "reason", "started_at", "finished_at",
+              "deadline", "test_until", "progress")
 RUN_KINDS = ("qa", "arch")
 FINDING_FIELDS = ("title", "body", "last_run", "status", "fixed_run", "decision", "decision_note", "decided_at",
                   "decided_by")
@@ -1158,6 +1173,9 @@ class AgentRun:
     finished_at: str | None
     created_at: str = ""
     updated_at: str = ""
+    deadline: str | None = None    # when the run is stopped, fixed when it is prepared
+    test_until: str | None = None  # a test run's: when its agent stops testing and writes the report
+    progress: str | None = None    # JSON: a test run's plan as the runner last counted it (qa.plan_progress)
 
 
 @dataclass(frozen=True)

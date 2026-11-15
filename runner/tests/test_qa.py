@@ -1028,6 +1028,123 @@ def test_the_brief_gives_the_time_left_and_asks_for_a_plan_first(w):
     assert text.index("## Your time and your plan") < text.index("## How to test")
 
 
+def test_the_runs_times_are_fixed_when_it_is_prepared_and_the_brief_the_stop_and_the_record_agree(w):
+    from datetime import datetime, timezone
+    queue(w)
+    run = w.store.run(RID)
+    start = w.now.astimezone(timezone.utc)
+    deadline = start + w.cfg.qa.timeout
+    until = deadline - min(timedelta(hours=1), w.cfg.qa.timeout / 4)
+    assert datetime.fromisoformat(run.started_at) == start
+    assert (datetime.fromisoformat(run.deadline), datetime.fromisoformat(run.test_until)) == (deadline, until)
+    text = dispatches(w)[0]["argv"][-1]
+    assert f"stopped at {deadline:%Y-%m-%d %H:%M} UTC" in text and f"Test until {until:%H:%M} UTC" in text
+    # The engine taking the run does not restart its clock, and a longer timeout set later does not move its stop.
+    w.now += timedelta(minutes=10)
+    w.tick()
+    assert w.store.run(RID).started_at == run.started_at
+    w.runner.qa.c = w.cfg.qa.__class__(**{**w.cfg.qa.__dict__, "timeout": w.cfg.qa.timeout * 3})
+    w.now = deadline + timedelta(minutes=1)
+    w.tick()
+    run = w.store.run(RID)
+    assert run.outcome == "unfinished" and f"did not finish in {w.cfg.qa.timeout.total_seconds() / 3600:g} h" in run.reason
+
+
+def test_an_engine_busy_when_the_run_is_sent_does_not_move_its_times(w):
+    w.set_engine(lambda s: s["next_rc"].update({"dispatch": 6}))
+    w.store.add_run("qa", "command", "ops")
+    w.tick()
+    run = w.store.run(RID)
+    assert run.state == "preparing" and run.deadline
+    w.now += timedelta(minutes=20)
+    w.tick()  # taken now: the time waited counts, as the brief composed before it says
+    later = w.store.run(RID)
+    assert later.state == "running"
+    assert (later.started_at, later.deadline, later.test_until) == (run.started_at, run.deadline, run.test_until)
+
+
+def test_a_run_prepared_before_runs_kept_their_times_is_stopped_by_its_start(w):
+    queue(w)
+    w.store.update_run(RID, deadline=None, test_until=None)
+    w.now += w.cfg.qa.timeout - timedelta(minutes=1)
+    w.tick()
+    assert w.store.run(RID).state == "running"
+    w.now += timedelta(minutes=2)
+    w.tick()
+    assert w.store.run(RID).outcome == "unfinished"
+
+
+def test_the_brief_gives_the_plan_a_form_the_runner_can_count(w):
+    queue(w)
+    text = dispatches(w)[0]["argv"][-1]
+    assert "- [ ] Sign in with the test account" in text and "- [ok] Sign in with the test account" in text
+    assert "first line still marked `[ ]`" in text
+
+
+def write_plan(w: World, text: str) -> None:
+    out = out_dir(w)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "plan.md").write_text(text)
+
+
+def test_the_runner_counts_the_plan_as_it_goes_and_keeps_it_after_the_workspace_is_cleaned(w):
+    queue(w)
+    assert w.store.run(RID).progress is None  # not looked at before the agent has started
+    w.tick()
+    assert json.loads(w.store.run(RID).progress)["state"] == "none"
+    write_plan(w, "## Sign-in\n- [ok] Sign in — works\n- [problem] Reset — 404\n- [ ] Sign out\n"
+                  "## Catalogue\n- [blocked] Pay — no card\n- [skipped] Export\n- [ ] Search\n")
+    w.now += timedelta(minutes=5)
+    w.tick()
+    p = json.loads(w.store.run(RID).progress)
+    assert {k: p[k] for k in ("state", "total", "ok", "problem", "blocked", "skipped", "open")} == \
+        {"state": "ok", "total": 6, "ok": 1, "problem": 1, "blocked": 1, "skipped": 1, "open": 2}
+    assert p["planned"] == 6 and p["seen_at"] == p["planned_at"]
+    # Unchanged, it is not written again: the time it shows is when it was first seen so.
+    seen, changed = p["seen_at"], w.store.run(RID).updated_at
+    w.now += timedelta(minutes=5)
+    w.tick()
+    assert json.loads(w.store.run(RID).progress)["seen_at"] == seen and w.store.run(RID).updated_at == changed
+    # A check added: the plan's first size stays to say it changed.
+    write_plan(w, "- [ok] a\n- [problem] b\n- [problem] c\n- [problem] d\n- [problem] e\n- [problem] f\n"
+                  "- [problem] g\n")
+    w.now += timedelta(minutes=5)
+    w.tick()
+    p = json.loads(w.store.run(RID).progress)
+    assert (p["total"], p["open"], p["planned"]) == (7, 0, 6)
+    report(w)
+    finish(w)
+    run = w.store.run(RID)
+    assert run.state == "done" and not out_dir(w).exists()
+    assert json.loads(run.progress)["total"] == 7
+
+
+@pytest.mark.parametrize("text, state", [("Just notes, no checks.\n", "shape"), (None, "none")])
+def test_a_plan_not_in_its_form_or_not_there_is_said_so_and_not_guessed(w, text, state):
+    queue(w)
+    if text is not None:
+        write_plan(w, text)
+    w.tick()
+    p = json.loads(w.store.run(RID).progress)
+    assert (p["state"], p["total"]) == (state, 0)
+
+
+def test_the_plan_is_read_as_the_agents_file_never_through_a_link_and_only_so_far(tmp_path):
+    from arceus_runner.qa import PLAN_BYTES, plan_progress
+    secret = tmp_path / "secret.md"
+    secret.write_text("- [ok] someone else's\n")
+    (tmp_path / "plan.md").symlink_to(secret)
+    assert plan_progress(tmp_path / "plan.md")["state"] == "unreadable"
+    big = tmp_path / "big.md"
+    big.write_text("- [ok] x\n" * (PLAN_BYTES // 9 + 100))
+    p = plan_progress(big)
+    assert p["cut"] and p["total"] <= PLAN_BYTES // 9 + 1
+    marks = tmp_path / "marks.md"
+    marks.write_text("- [x] done the GitHub way\n- [ ]\n* [OK] upper case\nok: not a line\n")
+    p = plan_progress(marks)
+    assert (p["total"], p["other"], p["ok"]) == (2, 1, 1)
+
+
 def test_the_brief_and_the_review_hold_evidence_to_the_platform_as_it_is(w):
     from arceus_runner.qa import REPORT_CRITERIA
     queue(w)

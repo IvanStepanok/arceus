@@ -4,6 +4,7 @@ who asked; the runner does the rest on its next pass. Their instructions are edi
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -12,9 +13,9 @@ from starlette.responses import HTMLResponse, Response
 from arceus_runner.config import Config
 from arceus_runner.console import execution as ex
 from arceus_runner.console import files, status
-from arceus_runner.console.store import ConsoleError, User
+from arceus_runner.console.store import ConsoleError, User, parse_iso
 from arceus_runner.console.web import Ctx, Denied
-from arceus_runner.db import RUN_HOLDS, RUN_UNDER_WAY, ReviewStore
+from arceus_runner.db import RUN_HOLDS, RUN_UNDER_WAY, AgentRun, ReviewStore
 from arceus_runner.workspace_run import MAX_INSTRUCTIONS, read_instructions
 
 KINDS = {"qa": ("qa", "test run", "Test runs"), "arch": ("architect", "architecture review", "Architecture reviews")}
@@ -117,6 +118,88 @@ def file_page(ctx: Ctx, *, kind: str, action: str, path: Path, title: str, lede:
                       required=required, sensitive=sensitive, readonly=bool(current.problem))
 
 
+def _epoch(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        at = parse_iso(value)
+    except ValueError:
+        return None
+    return at.timestamp() if at.tzinfo else None
+
+
+def clock(run: AgentRun, now: float) -> dict:
+    """A run's time as the runner keeps it: how long it waited and has been going (or took), and the times it was
+    given when it was prepared (`test_until`, `deadline`), with what is left of each. Nothing is worked out from
+    config.yaml: a run prepared before runs kept their times shows none."""
+    created, started, finished = _epoch(run.created_at), _epoch(run.started_at), _epoch(run.finished_at)
+    until, deadline = _epoch(run.test_until), _epoch(run.deadline)
+    end = finished if run.state == "done" and finished else now
+    out: dict = {"queued_for": started - created if started and created else None,
+                 "elapsed": end - started if started else None, "test_until": run.test_until if until else None,
+                 "deadline": run.deadline if deadline else None, "testing_left": None, "left": None,
+                 "used": None, "level": ""}
+    if started and deadline and deadline > started:
+        out["used"] = max(0, min(100, int((end - started) * 100 / (deadline - started))))
+        out["given"] = deadline - started
+    if run.state != "done":
+        if until:
+            out["testing_left"] = until - now
+        if deadline:
+            out["left"] = deadline - now
+    if deadline and end >= deadline:
+        out["level"] = "bad"
+    elif until and end >= until:
+        out["level"] = "warn"
+    return out
+
+
+def plan(run: AgentRun) -> dict | None:
+    """A test run's plan as the runner last counted it (qa.plan_progress), or None when it has not looked yet."""
+    try:
+        p = json.loads(run.progress or "null")
+    except ValueError:
+        return None
+    if not isinstance(p, dict) or p.get("state") not in ("none", "unreadable", "shape", "ok"):
+        return None
+    nums = {k: p.get(k) if isinstance(p.get(k), int) else 0
+            for k in ("total", "open", "ok", "problem", "blocked", "skipped", "other")}
+    done = max(0, nums["total"] - nums["open"])
+    planned = p.get("planned") if isinstance(p.get("planned"), int) else None
+    return {"state": p["state"], **nums, "done": done,
+            "pct": done * 100 // nums["total"] if nums["total"] else 0,
+            "planned": planned if planned is not None and planned != nums["total"] else None,
+            "planned_at": p.get("planned_at") or "", "seen_at": p.get("seen_at") or "", "seen": _epoch(p.get("seen_at")),
+            "cut": bool(p.get("cut"))}
+
+
+# What a running run is doing, by whose turn the engine says it is (execution.live): only what is confirmed.
+TURN_WORDS = {"agent": "Agent working", "checks": "Checks: the engine's gate or Codex has the turn",
+              "paused": "Waiting for the engine"}
+
+
+def stage(run: AgentRun, live_view: dict | None) -> str:
+    """What a run is doing: its state, and while it runs, whose turn the engine reports, with the report part the
+    runner has under way when the report comes in parts. Nothing is read from the plan or the clock: a plan whose
+    checks are all marked does not show what the agent is doing now, and neither does the time it was told to stop."""
+    words = ex.RUN_STATE_WORDS.get(run.state, run.state)
+    if run.state != "running":
+        return words
+    turn = (live_view or {}).get("turn") or ""
+    words = TURN_WORDS.get(turn, "Running: the engine's step is not known yet")
+    try:
+        rv = json.loads(run.snapshot or "{}").get("review") or {}
+    except (ValueError, AttributeError):
+        rv = {}
+    parts = rv.get("parts") if isinstance(rv, dict) else None
+    if isinstance(parts, list) and len(parts) > 1:
+        again = rv.get("again")
+        k = parts.index(again) + 1 if again in parts else rv.get("part", 1)
+        if isinstance(k, int) and 1 <= k <= len(parts):
+            words += f" (report in {len(parts)} parts, on part {k}" + (", read again)" if again in parts else ")")
+    return words
+
+
 def run_view(cfg: Config, kind: str, n: int, now: float | None = None) -> dict | None:
     """A run's page before its report (and when a finished run has none): where it is, why it waits, the live figures,
     as a task's page shows them (execution.py). None when there is no such run."""
@@ -146,8 +229,10 @@ def run_view(cfg: Config, kind: str, n: int, now: float | None = None) -> dict |
                    "detail": (f"The run ended ({(run.outcome or 'no outcome').replace('_', ' ')}) and the console "
                               "finds no report for it." + (f" {run.reason}" if run.reason else ""))}
         noun = status.RUN_WORDS[kind][0]
+        plan_view = plan(run) if kind == "qa" else None
         return {"kind": kind, "n": n, "id": run.id, "title": f"{noun}, run {n}", "state": run.state,
-                "words": ex.RUN_STATE_WORDS.get(run.state, run.state), "why": why, "runner": runner, "live": view,
+                "words": stage(run, view), "why": why, "runner": runner, "live": view,
+                "clock": clock(run, now), "plan": plan_view,
                 "fresh": ex.freshness(runner, running, view, now), "stop_asked": bool(run.stop_requested),
                 "requested_by": run.requested_by, "source": run.source, "created_at": run.created_at,
                 "started_at": run.started_at or "", "finished_at": run.finished_at or "", "updated_at": run.updated_at,
@@ -156,13 +241,19 @@ def run_view(cfg: Config, kind: str, n: int, now: float | None = None) -> dict |
         store.close()
 
 
+def _can_stop(ctx: Ctx, view: dict) -> bool:
+    return ctx.can(f"{view['kind']}.run") and view["state"] in RUN_UNDER_WAY and not view["stop_asked"]
+
+
 def status_page(ctx: Ctx, view: dict) -> Response:
     return ctx.render("run_status.html", title=view["title"], r=view, ago=status.ago, duration=ex.duration,
-                      can_stop=ctx.can(f"{view['kind']}.run") and view["state"] in RUN_UNDER_WAY
-                      and not view["stop_asked"])
+                      can_stop=_can_stop(ctx, view))
 
 
 def status_live(ctx: Ctx, view: dict) -> Response:
+    """The part of a run's page that follows the server. The stop button is in it, so it goes once the run is over
+    or someone has asked to stop it."""
     html = ctx.app.templates.get_template("run_live.html").render(ctx=ctx, user=ctx.user, r=view, ago=status.ago,
-                                                                 duration=ex.duration)
+                                                                 duration=ex.duration, csrf=ctx.csrf,
+                                                                 can_stop=_can_stop(ctx, view))
     return HTMLResponse(html)

@@ -20,8 +20,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
+import stat
 from dataclasses import dataclass
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from arceus_runner import media, qa_report
@@ -40,8 +43,12 @@ ENGINE_READS = 60_000
 PART_BYTES = 40_000
 MAX_PARTS = 50
 RESUME = ("The session was interrupted (a reboot or a crash). Continue testing from where you stopped: your test plan "
-          "(plan.md in your report's folder) shows where that is.")
+          "(plan.md in your report's folder) shows where that is, at its first line still marked `[ ]`.")
 PLAN = "plan.md"
+# How much of plan.md the runner reads to count it (plan_progress); a plan is a list of lines, far below this.
+PLAN_BYTES = 512 * 1024
+# A line of the plan: a list item that starts with its mark in brackets, `[ ]` while not done, else a result.
+PLAN_LINE = re.compile(r"^[ \t]*[-*+][ \t]+\[([^\]\n]{0,20})\][ \t]*\S", re.M)
 # The part of a run's time kept for the report and its closing review, at most a quarter of the run.
 REPORT_TIME = timedelta(hours=1)
 OUTCOMES = ("passed", "partial", "found", "blocked", "unfinished", "stopped")
@@ -119,6 +126,35 @@ class Limits:
     def of(cls, c) -> Limits:
         return cls(checks=c.max_checks, findings=c.max_findings, files=c.max_files,
                    report_bytes=c.max_report_mb * 1024 * 1024, media_bytes=c.max_media_mb * 1024 * 1024)
+
+
+def plan_progress(path: Path) -> dict:
+    """How far the agent has got by its plan.md: its lines in the brief's form (PLAN_LINE) counted by their mark.
+    `state` is `none` (no plan yet), `unreadable`, `shape` (a plan with no line in that form) or `ok`. The file is the
+    agent's: read without following a link and only so far; nothing of its text is kept, only the counts."""
+    counts = {"state": "none", "total": 0, "open": 0, **{r: 0 for r in RESULTS}, "other": 0, "cut": False}
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return counts
+    except OSError:
+        return {**counts, "state": "unreadable"}
+    try:
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return {**counts, "state": "unreadable"}
+            data = f.read(PLAN_BYTES + 1)
+    except OSError:
+        return {**counts, "state": "unreadable"}
+    counts["cut"] = len(data) > PLAN_BYTES
+    text = data[:PLAN_BYTES].decode("utf-8", errors="replace")
+    for m in PLAN_LINE.finditer(text):
+        mark = m.group(1).strip().lower()
+        key = "open" if not mark else mark if mark in RESULTS else "other"
+        counts[key] += 1
+        counts["total"] += 1
+    counts["state"] = "ok" if counts["total"] else "shape"
+    return counts
 
 
 def _left_out(names: list[str]) -> str:
@@ -393,6 +429,27 @@ class QaAgent(WorkspaceRun):
     def _empty(self) -> dict:
         return {"summary": "", "blocked": "", "tested": [], "findings": []}
 
+    def _test_until(self, start: datetime) -> datetime:
+        return start + self.c.timeout - min(REPORT_TIME, self.c.timeout / 4)
+
+    def _note_progress(self, run: AgentRun) -> AgentRun:
+        """The plan's counts kept with the run when they changed: `seen_at` is when the runner first saw them so, and
+        `planned` with `planned_at` the number of lines the plan had when it was first read in its form."""
+        counts = plan_progress(self.out_dir(run) / PLAN)
+        try:
+            old = json.loads(run.progress or "{}")
+        except ValueError:
+            old = {}
+        if not isinstance(old, dict):
+            old = {}
+        if all(old.get(k) == v for k, v in counts.items()):
+            return run
+        now = self.d.now().isoformat()
+        kept = {k: old[k] for k in ("planned", "planned_at") if k in old}
+        if counts["state"] == "ok" and "planned" not in kept:
+            kept = {"planned": counts["total"], "planned_at": now}
+        return self.store.update_run(run.id, progress=json.dumps({**counts, **kept, "seen_at": now}))
+
     def _read(self, run: AgentRun) -> tuple[dict, list[str]]:
         return load_findings(self.out_dir(run), self.run_dir(run) / "media", Limits.of(self.c))
 
@@ -429,14 +486,16 @@ class QaAgent(WorkspaceRun):
 
     def _compose(self, run: AgentRun, instructions: str, repos: list[dict], extra: dict) -> str:
         """The agent's brief: how to work and report, then the operator's instructions whole. Composed once, when
-        the run is prepared, and kept in its snapshot, so a repeat is the same message for the engine. The time it
-        names runs from then: the run's own clock starts a moment later, when the engine takes it."""
+        the run is prepared, and kept in its snapshot, so a repeat is the same message for the engine. The times it
+        names are the run's own, fixed then (`deadline`, `test_until`): the runner stops it and the console shows
+        it by the same ones."""
         ws = self.cfg.paths.workspace.resolve()
         out = self.out_dir(run)
         review = self.review_link(run).relative_to(ws).as_posix()
-        hours = self.c.timeout.total_seconds() / 3600
-        deadline = self.d.now().astimezone(timezone.utc) + self.c.timeout
-        stop = deadline - min(REPORT_TIME, self.c.timeout / 4)
+        assert run.deadline and run.test_until and run.started_at
+        deadline = datetime.fromisoformat(run.deadline).astimezone(timezone.utc)
+        stop = datetime.fromisoformat(run.test_until).astimezone(timezone.utc)
+        hours = (deadline - datetime.fromisoformat(run.started_at)).total_seconds() / 3600
         lines = [f"Test run {run.n} of the platform: test it the way the instructions below ask, and report what you "
                  "found.", "",
                  "You are the tester. You use the platform as a person would, in the browser (the `browser` MCP "
@@ -449,10 +508,18 @@ class QaAgent(WorkspaceRun):
                  f"time). Test until {stop:%H:%M} UTC, which leaves the rest for the report and its review, and do not "
                  "stop sooner while the plan has checks you can still do.", "",
                  f"Before you test, write your test plan to {out / PLAN}: every check the instructions ask for, one "
-                 "line each, grouped the way the instructions group them (a user story, a feature, a screen). Then "
-                 "test by the plan and mark each line as you go: ok, problem, blocked or skipped, with a few words why. "
-                 "The plan is where you are: after a restart, or when your earlier context is gone, read it and go on "
-                 "from the first line not marked. Your report's `tested` is made from it.", "",
+                 "line each, under a `## ` heading for each group the instructions name (a user story, a feature, a "
+                 "screen). Each check is a list item that starts with an empty mark in brackets:", "",
+                 "```markdown", "## Sign-in", "- [ ] Sign in with the test account", "- [ ] Reset the password", "```",
+                 "",
+                 "Then test by the plan and mark each line as you go: put ok, problem, blocked or skipped between its "
+                 "brackets, and a few words why after the check:", "",
+                 "```markdown", "- [ok] Sign in with the test account — the dashboard opens",
+                 "- [problem] Reset the password — the link in the e-mail gives 404", "```", "",
+                 "Keep every check in this form and no other line starting with a mark: the runner counts these "
+                 "lines to show the team how far the run has got. A check you add later is a new line in the same "
+                 "form. The plan is where you are: after a restart, or when your earlier context is gone, read it "
+                 "and go on from the first line still marked `[ ]`. Your report's `tested` is made from it.", "",
                  "Aim to cover most of the plan; covering every line is not required. A check this test stand cannot "
                  "support (an e-mail the run cannot read, an external service that is not set up, a key or a device "
                  "you do not have) is \"blocked\" with its reason: mark it and move on, without spending long on it. "

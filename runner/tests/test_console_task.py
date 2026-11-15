@@ -8,6 +8,8 @@ from __future__ import annotations
 import html as htmllib
 import json
 import re
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -418,6 +420,119 @@ def test_a_run_under_way_opens_with_where_it_is_instead_of_not_found(w, kind, ba
     w.store.add_review("ACME-3", "c-1", "ivan", 1, "")
     task(w.store, "ACME-1", "dispatched")
     assert 'data-reason="workspace"' in page(w, f"{base}1/") and "ACME-1 has the shared workspace" in page(w, f"{base}1/")
+
+
+def iso(t: float) -> str:
+    from datetime import UTC, datetime
+    return datetime.fromtimestamp(t, UTC).isoformat()
+
+
+def test_a_test_run_shows_how_long_it_has_run_the_times_it_was_given_and_its_plan(w):
+    now = time.time()
+    run = w.store.add_run("qa", "command", "q@example.com")
+    started = now - 3600
+    w.store.update_run(run.id, state="running", started_at=iso(started), deadline=iso(started + 8 * 3600),
+                       test_until=iso(started + 7 * 3600),
+                       progress=json.dumps({"state": "ok", "total": 6, "open": 2, "ok": 1, "problem": 1, "blocked": 1,
+                                            "skipped": 1, "other": 0, "cut": False, "planned": 5,
+                                            "planned_at": iso(now - 1800), "seen_at": iso(now - 120)}))
+    w.store.conn.execute("UPDATE agent_runs SET created_at = ? WHERE id = ?",
+                         (iso(started - 1800).replace("+00:00", "Z"), run.id))
+    w.metrics_text = metrics(steps={run.id: ("agent", "running", now - 300)}, observed={run.id: now - 3},
+                             active={run.id: now - 15})
+    text = text_of(page(w, "/qa/1/live"))
+    assert "Running for 1 h 00 min" in text and "after 30 min in the queue" in text and "given 8 h 00 min" in text
+    # To the end of testing and to the stop (a second may pass while the page renders).
+    assert re.search(r"(6 h 00|5 h 59) min left .* (7 h 00|6 h 59) min left", text)
+    assert "4 of 6 checks done 66%" in text and "problem 1" in text and "not yet 2" in text
+    assert "had 5 checks when first counted" in text and "2 min ago" in text
+    assert "Agent working" in text and "Testing by the plan" not in text
+    # Past the time for testing, the page says so; done is done whatever the results.
+    w.store.update_run(run.id, test_until=iso(now - 60),
+                       progress=json.dumps({"state": "ok", "total": 3, "open": 0, "ok": 0, "problem": 3,
+                                            "blocked": 0, "skipped": 0, "other": 0, "seen_at": iso(now)}))
+    text = text_of(page(w, "/qa/1/live"))
+    assert "3 of 3 checks done 100%" in text and "over" in text
+    # A plan done and the time for testing over say nothing of what the agent does now: the engine's turn does.
+    assert "State Agent working" in text and "Writing the report" not in text
+    w.metrics_text = metrics(steps={run.id: ("gate", "running", now - 30)}, observed={run.id: now - 3})
+    assert "Checks: the engine's gate or Codex has the turn" in text_of(page(w, "/qa/1/live"))
+    w.metrics_text = metrics(observed={run.id: now - 3})
+    assert "the engine's step is not known yet" in text_of(page(w, "/qa/1/live"))
+
+
+def test_a_run_whose_report_is_under_review_in_parts_says_which_part(w):
+    run = w.store.add_run("qa", "command", "q@example.com")
+    w.store.update_run(run.id, state="running", started_at=iso(time.time() - 60),
+                       snapshot=json.dumps({"review": {"part": 2, "parts": ["findings.json", "findings-2.json",
+                                                                             "findings-3.json"]}}))
+    assert "(report in 3 parts, on part 2)" in text_of(page(w, "/qa/1/live"))
+
+
+@pytest.mark.parametrize("progress, words", [
+    ({"state": "none"}, "No plan yet"), ({"state": "shape"}, "not in the form"),
+    ({"state": "unreadable"}, "cannot be read")])
+def test_a_plan_that_cannot_be_counted_is_said_so_never_as_numbers(w, progress, words):
+    run = w.store.add_run("qa", "command", "q@example.com")
+    w.store.update_run(run.id, state="running", started_at=iso(time.time() - 60), progress=json.dumps(progress))
+    html = page(w, "/qa/1/live")
+    assert words in text_of(html) and "checks done" not in html
+
+
+def test_a_queued_run_shows_no_clock_and_an_old_run_no_times_it_was_not_given(w):
+    run = w.store.add_run("qa", "command", "q@example.com")
+    assert 'data-card="time"' not in page(w, "/qa/1/live")
+    w.store.update_run(run.id, state="running", started_at=iso(time.time() - 120))
+    html = page(w, "/qa/1/live")
+    assert "Running for 2 min" in text_of(html) and 'data-time="deadline"' not in html
+
+
+def test_a_finished_run_shows_what_it_took_and_its_plan_as_it_last_stood(w):
+    run = w.store.add_run("qa", "command", "q@example.com")
+    w.store.update_run(run.id, state="done", outcome="unfinished", started_at="2026-11-15T09:00:00Z",
+                       finished_at="2026-11-15T11:30:00Z", deadline="2026-11-15T17:00:00Z",
+                       test_until="2026-11-15T16:00:00Z",
+                       progress=json.dumps({"state": "ok", "total": 4, "open": 1, "ok": 3, "problem": 0,
+                                            "blocked": 0, "skipped": 0, "other": 0}))
+    text = text_of(page(w, "/qa/1/"))
+    assert "Took 2 h 30 min" in text and "3 of 4 checks done" in text and " left" not in text
+
+
+def test_the_time_limit_is_not_shown_as_a_promised_end(w):
+    run = w.store.add_run("qa", "command", "q@example.com")
+    now = time.time()
+    w.store.update_run(run.id, state="running", started_at=iso(now - 3600), deadline=iso(now - 60))
+    text = text_of(page(w, "/qa/1/live"))
+    assert "Time limit" in text and "passed" in text and "at the latest" not in text
+    assert "stopped on the runner's first pass after it" in text
+
+
+def test_the_stop_button_follows_the_run_and_goes_once_stop_is_asked(w):
+    run = w.store.add_run("qa", "command", "q@example.com")
+    w.store.update_run(run.id, state="running", started_at=iso(time.time() - 60))
+    assert "Stop this run" in page(w, "/qa/1/live")
+    w.store.update_run(run.id, stop_requested=1)
+    assert "Stop this run" not in page(w, "/qa/1/live")
+    w.store.update_run(run.id, stop_requested=0, state="done")
+    assert "Stop this run" not in page(w, "/qa/1/live")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the console's script")
+def test_the_page_says_it_stopped_updating_also_when_requests_hang_and_never_piles_them_up():
+    """The console's own script against a fake page and clock (console_refresh_check.js): a server that hangs shows
+    the notice within two rounds, one request at a time, and an answer after it hides the notice again."""
+    from arceus_runner.console.assets import CONSOLE_JS
+    r = subprocess.run(["node", str(Path(__file__).with_name("console_refresh_check.js"))], input=CONSOLE_JS,
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr + r.stdout
+
+
+def test_the_run_page_does_not_read_the_timer_aloud_and_says_when_it_stops_updating(w):
+    run = w.store.add_run("qa", "command", "q@example.com")
+    w.store.update_run(run.id, state="running", started_at=iso(time.time() - 60))
+    html = page(w, "/qa/1/")
+    wrapper = re.search(r"<div data-refresh=[^>]*>", html).group(0)
+    assert "aria-live" not in wrapper and "data-announce" in html and re.search(r"data-lost\s+hidden", html)
 
 
 def test_a_finished_review_still_opens_as_its_report(w):

@@ -1,10 +1,63 @@
 {% from "execution.html" import headline, fresh_marker, live_rows, runner_row %}
+{% from "macros.html" import csrf_field %}
 {% if r.report_ready %}
 <p class="headline good" data-reason="report_ready" data-final><span class="glyph" aria-hidden="true">✓</span> Finished: the report is written</p>
 <p><a class="btn primary" href="{{ r.base }}{{ r.n }}/">Open the report</a></p>
 {% else %}
 {{ headline(r.why) }}
 {{ fresh_marker(r.fresh) }}
+{% set c = r.clock %}
+{% if c.elapsed is not none %}
+<section class="card" data-card="time">
+  <h2>Time</h2>
+  <ul class="meters">
+    <li data-time="elapsed">
+      <span class="meter-name">{{ "Took" if r.state == "done" else "Running for" }}</span>
+      <span class="meter-num">{{ duration(c.elapsed) }}</span>
+      {% if c.used is not none %}<span class="meter {{ c.level }}" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ c.used }}" aria-label="Share of the run's time used"><span class="fill w{{ (c.used // 5 * 5) if c.used < 100 else 100 }}"></span></span>{% endif %}
+      <span class="note">Started {{ r.started_at|when }}{% if c.queued_for is not none and c.queued_for >= 60 %}, after {{ duration(c.queued_for) }} in the queue{% endif %}.{% if c.given %} The run was given {{ duration(c.given) }}.{% endif %}</span>
+    </li>
+    {% if c.test_until %}
+    <li data-time="testing">
+      <span class="meter-name">Testing until {{ c.test_until|when }}</span>
+      <span class="meter-num">{% if c.testing_left is none %}&nbsp;{% elif c.testing_left > 0 %}{{ duration(c.testing_left) }} left{% else %}over{% endif %}</span>
+      <span class="note">The agent is told to stop testing then and write its report, which Codex reviews. It stops sooner when every check of its plan is done.</span>
+    </li>
+    {% endif %}
+    {% if c.deadline %}
+    <li data-time="deadline">
+      <span class="meter-name">Time limit {{ c.deadline|when }}</span>
+      <span class="meter-num">{% if c.left is none %}&nbsp;{% elif c.left > 0 %}{{ duration(c.left) }} left{% else %}passed{% endif %}</span>
+      <span class="note">Not when the run ends. A run still going past it is stopped on the runner's first pass after it; then the workspace is put back and the report written, so the report opens some minutes later.</span>
+    </li>
+    {% endif %}
+  </ul>
+</section>
+{% endif %}
+{% if r.plan %}
+{% set p = r.plan %}
+<section class="card" data-card="plan">
+  <h2>Test plan</h2>
+  {% if p.state == "ok" %}
+  <ul class="meters">
+    <li>
+      <span class="meter-name">{{ p.done }} of {{ p.total }} checks done</span>
+      <span class="meter-num">{{ p.pct }}%</span>
+      <span class="meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ p.pct }}" aria-label="Checks done"><span class="fill w{{ (p.pct // 5 * 5) if p.pct < 100 else 100 }}"></span></span>
+    </li>
+  </ul>
+  <p class="plan-counts"><span class="tag ok">ok {{ p.ok }}</span> <span class="tag problem">problem {{ p.problem }}</span> <span class="tag blocked">blocked {{ p.blocked }}</span> <span class="tag skipped">skipped {{ p.skipped }}</span>{% if p.other %} <span class="tag quiet">other mark {{ p.other }}</span>{% endif %} <span class="tag quiet">not yet {{ p.open }}</span></p>
+  <p class="note">Done counts every check with a result, problems included: a run whose every check found a problem has done them all.{% if p.planned is not none %} The plan had {{ p.planned }} checks when first counted at {{ p.planned_at|when }}; the agent changed it since.{% endif %}{% if p.cut %} The plan is longer than the runner reads; only its beginning is counted.{% endif %}</p>
+  {% elif p.state == "none" %}
+  <p>No plan yet. The agent writes one before it starts testing.</p>
+  {% elif p.state == "shape" %}
+  <p>The plan is not in the form the agent was given (one <code class="lit">- [ ] check</code> line per check), so its checks cannot be counted.</p>
+  {% else %}
+  <p>The plan file cannot be read.</p>
+  {% endif %}
+  {% if p.seen_at %}<p class="note">As counted at {{ p.seen_at|when }} ({{ ago(p.seen, r.now) }}). The runner reads the plan on each of its passes and records it when it changes.</p>{% endif %}
+</section>
+{% endif %}
 <section class="card">
   <h2>Now</h2>
   <dl class="facts">
@@ -13,10 +66,14 @@
     {% if r.live %}{{ live_rows(r.live, r.now, ago, duration) }}{% endif %}
     {{ runner_row(r.runner) }}
     <dt>Asked by</dt><dd>{{ "Schedule" if r.source == "schedule" else r.requested_by }}<span class="sub">queued {{ r.created_at|when }}</span></dd>
-    {% if r.started_at %}<dt>Started</dt><dd>{{ r.started_at|when }}</dd>{% endif %}
     {% if r.finished_at %}<dt>Finished</dt><dd>{{ r.finished_at|when }}</dd>{% endif %}
     <dt>Engine task</dt><dd><code class="lit">{{ r.id }}</code></dd>
   </dl>
 </section>
+{% if can_stop %}
+<div class="toolbar spaced-top">
+  <form method="post" action="{{ r.base }}{{ r.n }}/stop">{{ csrf_field(csrf) }}<button class="btn danger" type="submit" data-confirm="Stop run {{ r.n }}? Its report says what it found so far.">Stop this run</button></form>
+</div>
+{% endif %}
 <p class="refreshed"{% if r.state == "done" %} data-final{% endif %}>Updated {{ ctx.app.now_text() }}.{% if r.state != "done" %} This part refreshes by itself; the report opens here once it is written.{% endif %}</p>
 {% endif %}
