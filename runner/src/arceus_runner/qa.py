@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import timedelta, timezone
 from pathlib import Path
 
 from arceus_runner import media, qa_report
@@ -38,7 +39,11 @@ FINDINGS = "findings.json"
 ENGINE_READS = 60_000
 PART_BYTES = 40_000
 MAX_PARTS = 50
-RESUME = "The session was interrupted (a reboot or a crash). Continue testing from where you stopped."
+RESUME = ("The session was interrupted (a reboot or a crash). Continue testing from where you stopped: your test plan "
+          "(plan.md in your report's folder) shows where that is.")
+PLAN = "plan.md"
+# The part of a run's time kept for the report and its closing review, at most a quarter of the run.
+REPORT_TIME = timedelta(hours=1)
 OUTCOMES = ("passed", "partial", "found", "blocked", "unfinished", "stopped")
 
 MAX_STEPS = 30
@@ -46,6 +51,9 @@ MAX_EVIDENCE = 10                 # files per finding
 NAMED = 10                        # what was left out, named one by one before "and N more"
 SEVERITIES = ("critical", "major", "minor")
 RESULTS = ("ok", "problem", "blocked", "skipped")
+# What findings.json says of the whole report: the runner checks it against all the parts (_load_findings), and a fix
+# to any part changes it, so it is no change to the first part after its review (QaAgent._review_digest).
+TOTALS = ("parts", "checks", "findings_count")
 
 # What the engine's Codex judges the closing report of a test run by (WorkspaceRun.REPORT_CRITERIA), in place of the
 # server's rule for data changes: a test run on a test stand makes test data by its nature, and asking for the undo of
@@ -63,7 +71,9 @@ all the parts. Judge the report by these points, and only these:
 1. Every finding says where it happens (a URL or screen), gives steps from a state anyone can reach, names the step
    where it goes wrong, sets expected against actual, and says how many attempts reproduced it. A finding whose
    steps or evidence do not support what it claims is grounds for FAIL.
-2. A finding names the screenshot or recording that shows it, at the step it proves; one without any says why.
+2. A finding names the screenshot or recording that shows it, at the step it proves; one without any says why. A
+   picture of the tester's own words (a summary or a narrated result written onto a page) shows nothing of the
+   platform and is no evidence; a raw request and response shown exactly as they went and came back is.
 3. The summary and the conclusions claim no more than the checks show: nothing is called working that was not
    checked, and a check that could not be done or was skipped is listed as such, never as passed.
 4. The numbers agree: what the summary counts matches the checks and findings listed.
@@ -187,7 +197,7 @@ def _load_findings(folder: Path, dest: Path, limits: Limits) -> tuple[dict, list
     raw_findings = [f for p in parts for f in (p.get("findings") if isinstance(p.get("findings"), list) else [])]
     if len(names) > 1 or data.get("parts") is not None:
         # The first part is reviewed alone, so what it says of the whole is checked here.
-        declared = {k: count(data.get(k)) for k in ("parts", "checks", "findings_count")}
+        declared = {k: count(data.get(k)) for k in TOTALS}
         actual = {"parts": len(names), "checks": len(raw_tested), "findings_count": len(raw_findings)}
         for key, label in (("parts", "parts"), ("checks", "checks"), ("findings_count", "findings")):
             if declared[key] != actual[key]:
@@ -370,6 +380,16 @@ class QaAgent(WorkspaceRun):
     def _parts(self, run: AgentRun) -> list[str]:
         return report_parts(self.out_dir(run)) or [FINDINGS]
 
+    def _review_digest(self, name: str, data: bytes) -> str:
+        if name == FINDINGS:
+            try:
+                whole = json.loads(data)
+            except ValueError:
+                whole = None
+            if isinstance(whole, dict):
+                data = json.dumps({k: v for k, v in whole.items() if k not in TOTALS}, sort_keys=True).encode()
+        return super()._review_digest(name, data)
+
     def _empty(self) -> dict:
         return {"summary": "", "blocked": "", "tested": [], "findings": []}
 
@@ -408,11 +428,15 @@ class QaAgent(WorkspaceRun):
     # -- the brief ----------------------------------------------------------------------------------
 
     def _compose(self, run: AgentRun, instructions: str, repos: list[dict], extra: dict) -> str:
-        """The agent's brief: how to work and report, then the operator's instructions whole. The same inputs give
-        the same text, so a repeat is the same message for the engine."""
+        """The agent's brief: how to work and report, then the operator's instructions whole. Composed once, when
+        the run is prepared, and kept in its snapshot, so a repeat is the same message for the engine. The time it
+        names runs from then: the run's own clock starts a moment later, when the engine takes it."""
         ws = self.cfg.paths.workspace.resolve()
         out = self.out_dir(run)
         review = self.review_link(run).relative_to(ws).as_posix()
+        hours = self.c.timeout.total_seconds() / 3600
+        deadline = self.d.now().astimezone(timezone.utc) + self.c.timeout
+        stop = deadline - min(REPORT_TIME, self.c.timeout / 4)
         lines = [f"Test run {run.n} of the platform: test it the way the instructions below ask, and report what you "
                  "found.", "",
                  "You are the tester. You use the platform as a person would, in the browser (the `browser` MCP "
@@ -420,6 +444,21 @@ class QaAgent(WorkspaceRun):
                  "anything: do not edit files in the repositories, do not commit, do not push. Do not ask anyone a "
                  "question: nobody answers during this run. When something is unclear, decide what you can and say "
                  "what you assumed.", "",
+                 "## Your time and your plan", "",
+                 f"This run has {hours:g} h: it is stopped at {deadline:%Y-%m-%d %H:%M} UTC (`date -u` tells the "
+                 f"time). Test until {stop:%H:%M} UTC, which leaves the rest for the report and its review, and do not "
+                 "stop sooner while the plan has checks you can still do.", "",
+                 f"Before you test, write your test plan to {out / PLAN}: every check the instructions ask for, one "
+                 "line each, grouped the way the instructions group them (a user story, a feature, a screen). Then "
+                 "test by the plan and mark each line as you go: ok, problem, blocked or skipped, with a few words why. "
+                 "The plan is where you are: after a restart, or when your earlier context is gone, read it and go on "
+                 "from the first line not marked. Your report's `tested` is made from it.", "",
+                 "Aim to cover most of the plan; covering every line is not required. A check this test stand cannot "
+                 "support (an e-mail the run cannot read, an external service that is not set up, a key or a device "
+                 "you do not have) is \"blocked\" with its reason: mark it and move on, without spending long on it. "
+                 "Write the report when every line of the plan is marked or the time to stop testing has come, not "
+                 "before. A check left \"skipped\" because you did not get to it while time was left says why in its "
+                 "`note`.", "",
                  "## How to test", "",
                  "- Test everything the instructions ask for, in their order. Use the accounts and data they give, "
                  "and nothing they forbid. Do nothing irreversible the instructions do not allow: no real payments, "
@@ -441,6 +480,13 @@ class QaAgent(WorkspaceRun):
                  "and name them in the finding they prove. Take each at the moment the problem shows, and say in "
                  "`step` which step of the finding it belongs to. Never capture a password, a token or a secret on "
                  "screen. Nothing else in that folder is read.", "",
+                 "Evidence shows the platform as it is. Never change a page of the platform to take a picture of it: "
+                 "no text, overlay or edit put onto it, and never a picture of your own words (a summary, a narrated "
+                 "result) offered as what the platform did. When what proves a problem is an API response no screen "
+                 "shows, open the API's URL in a tab of its own where it opens so, or else show the request and the "
+                 "response exactly as they went and came back, unedited, on a blank page of its own (`about:blank`), "
+                 "and say in `caption` that it is the raw request and response. Where no picture can honestly show a "
+                 "step, name none for it and say why in the finding.", "",
                  "## The code", "",
                  f"The workspace ({ws}) holds every repository of the platform. To explain a problem, find where it "
                  "comes from in the code and name the file and line. This is what you suspect, not what you proved: "

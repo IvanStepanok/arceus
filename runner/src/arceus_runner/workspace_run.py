@@ -113,6 +113,10 @@ class WorkspaceRun:
     PART_REVIEW = ("The reviewer has finished with {done}. Your report has more parts: it now reads {name}, as "
                    "`{link}`. Change nothing unless its objections ask for it, and then correct {name}. Finish again "
                    "with the outcome succeeded_research, its summary starting with `{link}`.")
+    AGAIN_REVIEW = ("The reviewer has read every part of your report, but {name} changed after its review. It now "
+                    "reads {name} again, as `{link}`. Change nothing unless its objections ask for it, and then "
+                    "correct {name}. Finish again with the outcome succeeded_research, its summary starting with "
+                    "`{link}`.")
 
     def __init__(self, delivery, settings):
         self.d = delivery
@@ -408,11 +412,14 @@ class WorkspaceRun:
     # The engine's review reads one file of the report per attempt, and only so much of it. A report in several parts
     # is reviewed one part per attempt: when an attempt ends `done` (its part passed, or was let through with notes)
     # and parts are left, the runner links the next one and asks the agent to finish again naming it
-    # (`worker-send --relation continue`, which the engine reviews by the task's stored budget). The run's snapshot
-    # keeps where this stands under "review": the part under review, whether the message for it was sent, the parts
-    # as they were when the first was reviewed, a digest of each part as its review saw it, and the objections left
-    # on the parts done. The message is counted before it is sent and marked sent after; the engine takes a message
-    # id once, so a runner that restarts in between sends it again and nothing more.
+    # (`worker-send --relation continue`, which the engine reviews by the task's stored budget). Answering an objection
+    # on a later part can change one already reviewed (its totals or its summary): once the last part is done, each
+    # part that changed since its review is read once more the same way (`again`), and only a part that changed after
+    # that is reported as changed after its review. The run's snapshot keeps where this stands under "review": the part
+    # under review, the part read again if any, whether the message for it was sent, the parts as they were when the
+    # first was reviewed, a digest of each part as its review saw it (`_review_digest`), the parts read again, and the
+    # objections left on the parts done. The message is counted before it is sent and marked sent after; the engine
+    # takes a message id once, so a runner that restarts in between sends it again and nothing more.
 
     def _review_state(self, run: AgentRun) -> dict:
         return json.loads(run.snapshot or "{}").get("review") or {}
@@ -423,20 +430,41 @@ class WorkspaceRun:
 
     def _digest(self, run: AgentRun, name: str) -> str:
         try:
-            return hashlib.sha256((self.out_dir(run) / name).read_bytes()).hexdigest()
+            return self._review_digest(name, (self.out_dir(run) / name).read_bytes())
         except OSError:
             return ""
 
+    def _changed(self, run: AgentRun, name: str, digest: str) -> bool:
+        """Whether a part differs from how its review saw it. A digest kept before `_review_digest` took its present
+        form is the whole file's, and is matched as such."""
+        try:
+            data = (self.out_dir(run) / name).read_bytes()
+        except OSError:
+            return digest != ""
+        return digest not in (self._review_digest(name, data), hashlib.sha256(data).hexdigest())
+
+    def _review_digest(self, name: str, data: bytes) -> str:
+        """What of a part a later change has to differ in to count as a change after its review: the whole file,
+        unless the kind keeps out what a fix elsewhere is bound to change."""
+        return hashlib.sha256(data).hexdigest()
+
+    def _reviewing(self, rv: dict) -> int:
+        """The number of the part the current attempt's review reads: the one read again, or the next in turn."""
+        parts = rv.get("parts") or []
+        again = rv.get("again")
+        return parts.index(again) + 1 if again in parts else rv.get("part", 1)
+
     def _resume_text(self, run: AgentRun) -> str:
-        k = self._review_state(run).get("part", 1)
-        if k == 1:
+        rv = self._review_state(run)
+        k = self._reviewing(rv)
+        if k == 1 and not rv.get("again"):
             return self.RESUME
         link = self.review_link(run, k).relative_to(self.cfg.paths.workspace.resolve()).as_posix()
         return f"{self.RESUME} The reviewer is reading {self._part_file(k)}: finish with your summary starting with `{link}`."
 
     def _next_part(self, run: AgentRun, show: dict) -> bool:
-        """After an attempt whose review settled its part: on to the next part, if there is one and time is left.
-        True while that is under way."""
+        """After an attempt whose review settled its part: on to the next part, or, after the last, to a part that
+        changed since its review and has not been read again yet, while time is left. True while that is under way."""
         if not self.REPORT_FILE or run.stop_requested or show.get("state") != "done" or self._overdue(run):
             return False
         rv = self._review_state(run)
@@ -444,15 +472,25 @@ class WorkspaceRun:
             return False
         k = rv.get("part", 1)
         parts = rv.get("parts") or self._parts(run)
-        if k >= len(parts):
+        if len(parts) <= 1 or k > len(parts):
             return False
-        name = parts[k - 1]
-        notes = list(rv.get("notes") or [])
+        again = rv.get("again")
+        name = again or parts[k - 1]
+        digests = {**(rv.get("digests") or {}), name: self._digest(run, name)}
+        rechecked = [*(rv.get("rechecked") or []), *([again] if again else [])]
+        if k < len(parts):
+            k, again = k + 1, None
+        else:
+            changed = [n for n in parts if n in digests and n not in rechecked and self._changed(run, n, digests[n])]
+            if not changed:
+                return False  # the report is read whole: _review_notes keeps what this last attempt left
+            again = changed[0]
+        notes = [n for n in rv.get("notes") or [] if n["part"] != name]  # a part read again: only its latest review
         mine = self._engine_notes(show)
         if mine:
             notes.append({"part": name, "text": mine["engine_review"]})
-        rv = {"part": k + 1, "sent": False, "parts": parts, "notes": notes,
-              "digests": {**(rv.get("digests") or {}), name: self._digest(run, name)}}
+        rv = {"part": k, "again": again, "sent": False, "parts": parts, "notes": notes, "digests": digests,
+              "rechecked": rechecked}
         self._send_part(self._set_review_state(run, rv))
         return True
 
@@ -470,18 +508,22 @@ class WorkspaceRun:
 
     def _send_part(self, run: AgentRun) -> None:
         rv = self._review_state(run)
-        k = rv["part"]
+        k = self._reviewing(rv)
+        again = bool(rv.get("again"))
         ws = self.cfg.paths.workspace.resolve()
         self._link_report(run, k)
-        done = ", ".join(rv["parts"][:k - 1])
-        text = self.PART_REVIEW.format(done=done, name=self._part_file(k),
-                                       link=self.review_link(run, k).relative_to(ws).as_posix())
-        reply = self.d.engine.send(task_id=run.id, message_id=f"review-{run.id}-{k}", source="other",
-                                   author=run.requested_by, repo=Path(self.cfg.paths.workspace), text=text,
-                                   clearance=trusted(text), extra_dirs=self._extra_dirs(run))
+        link = self.review_link(run, k).relative_to(ws).as_posix()
+        if again:
+            text = self.AGAIN_REVIEW.format(name=self._part_file(k), link=link)
+        else:
+            text = self.PART_REVIEW.format(done=", ".join(rv["parts"][:k - 1]), name=self._part_file(k), link=link)
+        reply = self.d.engine.send(task_id=run.id, message_id=f"review-{run.id}-{'again-' if again else ''}{k}",
+                                   source="other", author=run.requested_by, repo=Path(self.cfg.paths.workspace),
+                                   text=text, clearance=trusted(text), extra_dirs=self._extra_dirs(run))
         if reply.accepted:
             self._set_review_state(run, {**rv, "sent": True})
-            self.emit("review_part", task_id=run.id, run=run.n, part=self._part_file(k), of=len(rv["parts"]))
+            self.emit("review_part", task_id=run.id, run=run.n, part=self._part_file(k), of=len(rv["parts"]),
+                      **({"again": True} if again else {}))
         elif reply.rc != 6:
             self._set_review_state(run, {**rv, "sent": True, "refused": f"the engine did not take it ({reply.why()})"})
             self.emit("review_part_refused", task_id=run.id, run=run.n, part=self._part_file(k), reason=reply.why())
@@ -493,24 +535,33 @@ class WorkspaceRun:
             return self._engine_notes(show) if show and not problem else {}
         rv = self._review_state(run)
         k = rv.get("part", 1)
+        again = rv.get("again")
         now = self._parts(run)
         parts = rv.get("parts") or now
-        notes = list(rv.get("notes") or [])
         mine = self._engine_notes(show) if show and not problem else {}
-        if mine:
-            notes.append({"part": parts[k - 1] if k <= len(parts) else self._part_file(k), "text": mine["engine_review"]})
         if len(parts) <= 1 and len(now) <= 1:
             return mine
+        if rv.get("refused") or not rv.get("sent", True):
+            mine = {}  # the engine's record is of the attempt before, whose objections are kept already
         # The part under review counts as read only when its attempt ended as a review ends.
         last_read = show is not None and not problem and not rv.get("refused") and rv.get("sent", True) and (
             show.get("state") == "done" or bool(mine))
-        read = parts[:k] if last_read else parts[:k - 1]
+        current = again or (parts[k - 1] if k <= len(parts) else self._part_file(k))
+        notes = list(rv.get("notes") or [])
+        digests = dict(rv.get("digests") or {})
+        if again and last_read:  # read again to its end: its latest review is the one that counts
+            notes = [n for n in notes if n["part"] != again]
+            digests[again] = self._digest(run, again)
+        if mine:
+            notes.append({"part": current, "text": mine["engine_review"]})
+        read = parts[:k] if last_read or again else parts[:k - 1]
         gaps = [f"{n} was not reviewed before the run ended" for n in [*parts, *[n for n in now if n not in parts]]
                 if n not in read]
         if gaps and rv.get("refused"):
             gaps[0] += f" ({rv['refused']})"
-        digests = rv.get("digests") or {}
-        gaps += [f"{n} changed after its review" for n in read if n in digests and self._digest(run, n) != digests[n]]
+        gaps += [f"{n} changed after its review" + (f" and was not reviewed again ({rv['refused']})"
+                                                    if n == again and rv.get("refused") else "")
+                 for n in read if n in digests and self._changed(run, n, digests[n])]
         if not notes and not gaps:
             return {}
         text = "\n\n".join([*(f"{n['part']}:\n{n['text'] or 'The review did not say what it objected to.'}"

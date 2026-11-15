@@ -512,15 +512,99 @@ def test_a_busy_engine_gets_the_part_again_and_a_restart_never_sends_two(w):
     assert w.store.run(RID).outcome == "found"
 
 
-def test_a_part_changed_after_its_review_counts_as_not_reviewed(w):
+def rewrite(w: World, name: str = "findings.json", **fields) -> None:
+    data = json.loads((out_dir(w) / name).read_text())
+    (out_dir(w) / name).write_text(json.dumps({**data, **fields}))
+
+
+def test_a_part_changed_after_its_review_is_read_again_once_the_last_part_is_done(w):
+    queue(w)
+    report_in_parts(w)
+    accepted_with_notes(w, why="STATE: COMPLETE\nVERDICT: FAIL\n1. Finding 1 names no URL.")
+    # Answering the second part's objections rewrites the first part's summary.
+    rewrite(w, summary="Rewritten while the second part was reviewed.")
+    passed(w)
+    run = w.store.run(RID)
+    assert run.state == "running"
+    again = sends(w)[-1]["argv"]
+    assert again[again.index("--message-id") + 1] == f"review-{RID}-again-1"
+    assert "findings.json changed after its review" in again[-1] and f"`artifacts/{RID}/findings.txt`" in again[-1]
+    assert w.events_named("qa_review_part")[-1] == {**w.events_named("qa_review_part")[-1],
+                                                    "part": "findings.json", "again": True}
+    passed(w)   # read again and passed: its earlier objection is gone with the version it was about
+    run = w.store.run(RID)
+    assert (run.state, run.outcome) == ("done", "found") and len(sends(w)) == 2
+    assert "engine_disputed" not in json.loads(run.result)
+
+
+def test_a_part_read_again_keeps_only_its_latest_objections(w):
+    queue(w)
+    report_in_parts(w)
+    accepted_with_notes(w, why="STATE: COMPLETE\nVERDICT: FAIL\n1. Finding 1 names no URL.")
+    rewrite(w, summary="Rewritten.")
+    passed(w)
+    accepted_with_notes(w, why="STATE: COMPLETE\nVERDICT: FAIL\n1. The summary counts 3 checks, there are 2.")
+    result = json.loads(w.store.run(RID).result)
+    assert result["engine_review"] == "findings.json:\n1. The summary counts 3 checks, there are 2."
+
+
+def test_the_totals_changing_with_a_later_part_are_no_change_to_the_first(w):
     queue(w)
     report_in_parts(w)
     passed(w)
-    data = json.loads((out_dir(w) / "findings.json").read_text())
-    (out_dir(w) / "findings.json").write_text(json.dumps({**data, "summary": "Rewritten after its review."}))
+    # A check added to the second part: the first part's totals follow, nothing else of it changes.
+    part = json.loads((out_dir(w) / "findings-2.json").read_text())
+    (out_dir(w) / "findings-2.json").write_text(json.dumps({**part, "tested": [*part["tested"], CHECK]}))
+    rewrite(w, checks=3)
+    passed(w)
+    run = w.store.run(RID)
+    assert run.state == "done" and len(sends(w)) == 1
+    result = json.loads(run.result)
+    assert "engine_disputed" not in result and result["problems"] == []
+
+
+def test_a_part_changed_after_it_was_read_again_counts_as_not_reviewed(w):
+    queue(w)
+    report_in_parts(w, parts=3, checks=3)
+    (out_dir(w) / "findings-3.json").write_text(json.dumps({"tested": [CHECK]}))
+    passed(w)
+    passed(w)
+    rewrite(w, summary="Rewritten once.")
+    rewrite(w, "findings-2.json", tested=[CHECK])
+    passed(w)   # the third part: the first and the second changed since their review
+    passed(w)   # the first, read again
+    rewrite(w, summary="Rewritten again, while the second was read again.")
+    passed(w)   # the second, read again: each part is read again once
+    run = w.store.run(RID)
+    assert run.state == "done"
+    assert [c["argv"][c["argv"].index("--message-id") + 1] for c in sends(w)] == [
+        f"review-{RID}-2", f"review-{RID}-3", f"review-{RID}-again-1", f"review-{RID}-again-2"]
+    result = json.loads(run.result)
+    assert result["engine_review"] == "findings.json changed after its review"
+
+
+def test_a_part_changed_after_its_review_with_no_time_left_counts_as_not_reviewed(w):
+    queue(w)
+    report_in_parts(w)
+    passed(w)
+    rewrite(w, summary="Rewritten after its review.")
+    w.now += w.cfg.qa.timeout + timedelta(minutes=1)
     passed(w)
     result = json.loads(w.store.run(RID).result)
+    assert len(sends(w)) == 1
     assert result["engine_disputed"] is True and "findings.json changed after its review" in result["engine_review"]
+
+
+def test_a_session_interrupted_while_a_part_is_read_again_is_told_which_part_to_name(w):
+    queue(w)
+    report_in_parts(w)
+    passed(w)
+    rewrite(w, summary="Rewritten.")
+    passed(w)
+    w.set_engine(lambda s: s["tasks"][RID].update(attempt_live=False))
+    w.tick()
+    resume = [c for c in sends(w) if c["argv"][c["argv"].index("--message-id") + 1].startswith("resume-")]
+    assert len(resume) == 1 and f"`artifacts/{RID}/findings.txt`" in resume[0]["argv"][-1]
 
 
 def test_a_part_the_review_never_reached_is_said_so(w):
@@ -931,3 +1015,55 @@ def test_a_report_escapes_what_the_agent_wrote(tmp_path):
                           "evidence": [], "code": [], "url": ""}], "tested": [], "repos": []}
     page = qa_report.render_run(view, "acme", ZoneInfo("Europe/Kyiv"))
     assert "<script>alert" not in page and "&lt;script&gt;" in page and "<b>x</b>" not in page
+
+
+def test_the_brief_gives_the_time_left_and_asks_for_a_plan_first(w):
+    from datetime import timezone
+    queue(w)
+    text = dispatches(w)[0]["argv"][-1]
+    deadline = w.now.astimezone(timezone.utc) + w.cfg.qa.timeout
+    stop = deadline - min(timedelta(hours=1), w.cfg.qa.timeout / 4)
+    assert f"stopped at {deadline:%Y-%m-%d %H:%M} UTC" in text and f"Test until {stop:%H:%M} UTC" in text
+    assert f"{out_dir(w).resolve() / 'plan.md'}" in text and "covering every line is not required" in text
+    assert text.index("## Your time and your plan") < text.index("## How to test")
+
+
+def test_the_brief_and_the_review_hold_evidence_to_the_platform_as_it_is(w):
+    from arceus_runner.qa import REPORT_CRITERIA
+    queue(w)
+    text = dispatches(w)[0]["argv"][-1]
+    assert "Never change a page of the platform to take a picture of it" in text
+    assert "`about:blank`" in text and "raw request and response" in text
+    assert "own words" in REPORT_CRITERIA and "is no evidence" in REPORT_CRITERIA
+
+
+def test_a_part_the_engine_would_not_read_again_says_so_once_with_its_objections_where_they_were(w):
+    queue(w)
+    report_in_parts(w)
+    accepted_with_notes(w, why="STATE: COMPLETE\nVERDICT: FAIL\n1. Finding 1 names no URL.")
+    rewrite(w, summary="Rewritten.")
+    w.set_engine(lambda s: s["next_rc"].update({"worker-send": 2}))
+    accepted_with_notes(w, why="STATE: COMPLETE\nVERDICT: FAIL\n1. The second finding has no screenshot.")
+    w.tick()
+    run = w.store.run(RID)
+    assert run.state == "done"
+    assert json.loads(run.result)["engine_review"].startswith(
+        "findings.json:\n1. Finding 1 names no URL.\n\n"
+        "findings-2.json:\n1. The second finding has no screenshot.\n\n"
+        "findings.json changed after its review and was not reviewed again (the engine did not take it (exit 2")
+
+
+def test_a_run_reviewed_before_the_totals_were_left_out_keeps_its_parts_as_reviewed(w):
+    """A run under way across the update: its digests are of the whole file."""
+    import hashlib
+    queue(w)
+    report_in_parts(w)
+    passed(w)
+    run = w.store.run(RID)
+    snap = json.loads(run.snapshot)
+    whole = hashlib.sha256((out_dir(w) / "findings.json").read_bytes()).hexdigest()
+    snap["review"]["digests"]["findings.json"] = whole
+    w.store.update_run(RID, snapshot=json.dumps(snap))
+    passed(w)
+    run = w.store.run(RID)
+    assert run.state == "done" and len(sends(w)) == 1 and "engine_disputed" not in json.loads(run.result)
