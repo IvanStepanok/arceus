@@ -29,7 +29,7 @@
   {% for r in rows %}
   {% set under_way = r.state != "done" %}
   <tr>
-    <td class="nowrap">{% if (kind == "qa" and r.has_report) or (kind != "qa" and r.state == "done") %}<a href="{{ base }}{{ r.n }}/">Run {{ r.n }}</a>{% else %}Run {{ r.n }}{% endif %}</td>
+    <td class="nowrap"><a href="{{ base }}{{ r.n }}/">Run {{ r.n }}</a></td>
     <td>
       {% if under_way %}
       <span class="tag {{ 'quiet' if r.state == 'pending' else 'busy' }}">{{ r.state_text }}</span>{% if r.stop_requested %} <span class="tag wait">Stop asked</span>{% endif %}

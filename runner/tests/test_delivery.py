@@ -1481,6 +1481,9 @@ def test_a_long_question_goes_as_parts_in_order_and_is_answered_as_one(w):
     assert "the option's number or your own words." in parts[2]
     posted = "\n".join(parts)
     assert [ln for ln in posted.splitlines() if ln.startswith("line ")] == lines  # whole, in order
+    # The task keeps it whole as well: the console's task page shows what the ticket got, not its first 1500 characters.
+    kept = json.loads(w.store.task("ACME-1").question)
+    assert kept["text"] == "\n".join(lines) and kept["options"] == ["Keep", "Drop"] and kept["id"] == "q-2"
     w.tick()
     assert len([t for t in w.bot_comments() if "needs an answer" in t or "**Part " in t]) == 3  # posted once
     w.yt.comment("2-1", "a.smith", "1")

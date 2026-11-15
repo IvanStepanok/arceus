@@ -4,15 +4,17 @@ who asked; the runner does the rest on its next pass. Their instructions are edi
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
-from starlette.responses import Response
+from starlette.responses import HTMLResponse, Response
 
 from arceus_runner.config import Config
-from arceus_runner.console import files
+from arceus_runner.console import execution as ex
+from arceus_runner.console import files, status
 from arceus_runner.console.store import ConsoleError, User
 from arceus_runner.console.web import Ctx, Denied
-from arceus_runner.db import RUN_UNDER_WAY, ReviewStore
+from arceus_runner.db import RUN_HOLDS, RUN_UNDER_WAY, ReviewStore
 from arceus_runner.workspace_run import MAX_INSTRUCTIONS, read_instructions
 
 KINDS = {"qa": ("qa", "test run", "Test runs"), "arch": ("architect", "architecture review", "Architecture reviews")}
@@ -113,3 +115,53 @@ def file_page(ctx: Ctx, *, kind: str, action: str, path: Path, title: str, lede:
                       versions=ctx.store.versions(kind), agent_ok=agent_gets is not None and bool(agent_gets.strip()),
                       agent_why=why, agent_bytes=len((agent_gets or "").encode()), limit=MAX_INSTRUCTIONS,
                       required=required, sensitive=sensitive, readonly=bool(current.problem))
+
+
+def run_view(cfg: Config, kind: str, n: int, now: float | None = None) -> dict | None:
+    """A run's page before its report (and when a finished run has none): where it is, why it waits, the live figures,
+    as a task's page shows them (execution.py). None when there is no such run."""
+    now = now or time.time()
+    try:
+        store = ReviewStore.read_only(cfg.paths.db)
+    except (FileNotFoundError, RuntimeError) as e:
+        raise ConsoleError(str(e)) from None
+    try:
+        run = store.run(f"{kind}-{n}")
+        if run is None:
+            return None
+        m = status.read_metrics(cfg)
+        runner = status.runner_status(m, now)
+        running = run.state == "running"
+        view = ex.live(m, run.id, now, ex.observed_stale_after(cfg)) if running else None
+        holder = ex.holder_words(store)
+        facts = ex.Facts(state=f"run:{run.state}", turn=(view or {}).get("turn", ""),
+                         used_up=ex.used_up(m, cfg.schedule.tz) if running else [],
+                         holder="" if run.state in RUN_HOLDS else holder, mode=m.mode or cfg.mode,
+                         drain_by=ex.drain_by(store), reason=run.reason or "", stop_asked=bool(run.stop_requested))
+        why = ex.reason(facts)
+        if run.state == "done":
+            # Finished, and this page is shown because its report is not there: said as such, never as a result.
+            why = {"code": "no_report", "tone": "bad", "title": "Finished, but its report is missing",
+                   "detail": (f"The run ended ({(run.outcome or 'no outcome').replace('_', ' ')}) and the console "
+                              "finds no report for it." + (f" {run.reason}" if run.reason else ""))}
+        noun = status.RUN_WORDS[kind][0]
+        return {"kind": kind, "n": n, "id": run.id, "title": f"{noun}, run {n}", "state": run.state,
+                "words": ex.RUN_STATE_WORDS.get(run.state, run.state), "why": why, "runner": runner, "live": view,
+                "fresh": ex.freshness(runner, running, view, now), "stop_asked": bool(run.stop_requested),
+                "requested_by": run.requested_by, "source": run.source, "created_at": run.created_at,
+                "started_at": run.started_at or "", "finished_at": run.finished_at or "", "updated_at": run.updated_at,
+                "base": "/qa/" if kind == "qa" else "/architecture/", "list": KINDS[kind][2], "now": now}
+    finally:
+        store.close()
+
+
+def status_page(ctx: Ctx, view: dict) -> Response:
+    return ctx.render("run_status.html", title=view["title"], r=view, ago=status.ago, duration=ex.duration,
+                      can_stop=ctx.can(f"{view['kind']}.run") and view["state"] in RUN_UNDER_WAY
+                      and not view["stop_asked"])
+
+
+def status_live(ctx: Ctx, view: dict) -> Response:
+    html = ctx.app.templates.get_template("run_live.html").render(ctx=ctx, user=ctx.user, r=view, ago=status.ago,
+                                                                 duration=ex.duration)
+    return HTMLResponse(html)

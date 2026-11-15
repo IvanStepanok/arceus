@@ -209,7 +209,7 @@ def same_origin(request: Request, settings: Settings) -> bool:
 
 
 # The bar at the top: address, words, who sees it. Only the sections this console serves are shown.
-SECTIONS = [("/", "Home", "view"), ("/qa/", "Test runs", "view"), ("/architecture/", "Architecture", "view"),
+SECTIONS = [("/", "Home", "view"), ("/tasks/", "Tasks", "view"), ("/qa/", "Test runs", "view"), ("/architecture/", "Architecture", "view"),
             ("/grafana/", "Monitoring", "view"), ("/settings/", "Settings", "settings.view"),
             ("/operations/", "Operations", "ops.view"), ("/users/", "People", "users.manage")]
 
@@ -235,6 +235,7 @@ class ConsoleApp:
         self.templates.globals["can"] = auth.can
         self.templates.globals["role_words"] = auth.ROLE_WORDS
         self.templates.filters["when"] = self.when
+        self.templates.filters["at"] = self.at
         self.session_cookie = "__Host-arceus" if settings.secure else "arceus"
         self.csrf_cookie = "__Host-arceus-csrf" if settings.secure else "arceus-csrf"
         self.sections: set[str] = set()
@@ -261,6 +262,12 @@ class ConsoleApp:
         if at.tzinfo is None:
             at = at.replace(tzinfo=UTC)
         return f"{at.astimezone(self.tz()):%d %b %Y, %H:%M}"
+
+    def at(self, epoch: float | None) -> str:
+        """A moment the runner's metrics give (epoch seconds) in the project's timezone."""
+        if not epoch:
+            return ""
+        return f"{datetime.fromtimestamp(epoch, self.tz()):%d %b %Y, %H:%M}"
 
     def now_text(self) -> str:
         return f"{datetime.now(self.tz()):%H:%M:%S}"
@@ -353,11 +360,11 @@ async def healthz(_request: Request) -> Response:
 
 def create_app(settings: Settings | None = None) -> Starlette:
     from arceus_runner.console import (views_arch, views_auth, views_home, views_ops, views_qa, views_settings,
-                                       views_users)
+                                       views_tasks, views_users)
     settings = settings or Settings.from_env()
     console = ConsoleApp(settings)
     routes = [Route("/static/{name}", static), Route("/healthz", healthz)]
-    for module in (views_auth, views_home, views_qa, views_arch, views_settings, views_ops, views_users):
+    for module in (views_auth, views_home, views_tasks, views_qa, views_arch, views_settings, views_ops, views_users):
         routes += module.routes()
         console.sections.update(getattr(module, "SECTIONS", ()))
     app = Starlette(routes=routes)

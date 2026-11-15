@@ -66,14 +66,28 @@ def index(ctx: Ctx) -> Response:
                       schedule=cfg.qa.schedule)
 
 
+def _report_file(cfg, n: int):
+    """The run's result.json, or None while it has none (queued, under way, or finished without one)."""
+    result = cfg.qa.reports / str(n) / "result.json"
+    if result.is_symlink():
+        raise Gone()
+    return result if result.is_file() else None
+
+
 def run(ctx: Ctx) -> Response:
+    """The run's report once it is written; until then (and for a finished run without one) where the run is."""
     n = _n(ctx)
     cfg = _cfg(ctx)
-    folder = cfg.qa.reports / str(n)
-    result = folder / "result.json"
     try:
-        if result.is_symlink():
+        result = _report_file(cfg, n)
+    except OSError:
+        result = None
+    if result is None:
+        status = runs.run_view(cfg, "qa", n)
+        if status is None:
             raise Gone()
+        return runs.status_page(ctx, status)
+    try:
         view = json.loads(result.read_text(encoding="utf-8"))
     except (FileNotFoundError, NotADirectoryError):
         raise Gone() from None
@@ -82,6 +96,19 @@ def run(ctx: Ctx) -> Response:
                           message=f"The run's report cannot be read ({result}).")
     title, body = qa_report.run_body(view, cfg.project, cfg.schedule.tz)
     return ctx.render("report.html", title=title, body=Markup(body), kind="qa", n=n)
+
+
+def live(ctx: Ctx) -> Response:
+    n = _n(ctx)
+    cfg = _cfg(ctx)
+    status = runs.run_view(cfg, "qa", n)
+    if status is None:
+        raise Gone()
+    try:
+        status["report_ready"] = _report_file(cfg, n) is not None
+    except OSError:
+        pass
+    return runs.status_live(ctx, status)
 
 
 def stop(ctx: Ctx) -> Response:
@@ -122,5 +149,6 @@ def routes() -> list[Route]:
     return [Route("/qa/", page(index), methods=["GET", "POST"]),
             Route("/qa/instructions/", page(instructions), methods=["GET", "POST"]),
             Route("/qa/{n}/", page(run)),
+            Route("/qa/{n}/live", page(live, api=True)),
             Route("/qa/{n}/stop", page(stop), methods=["POST"]),
             Route("/qa/{n}/media/{file}", page(media))]

@@ -79,8 +79,13 @@ def report(ctx: Ctx) -> Response:
     store = _read(cfg)
     try:
         run = store.run(f"arch-{int(value)}")
-        if run is None or run.state != "done":
+        if run is None:
             raise Gone()
+        if run.state != "done":  # queued or under way: where it is, until the report is written
+            status = runs.run_view(cfg, "arch", int(value))
+            if status is None:
+                raise Gone()
+            return runs.status_page(ctx, status)
         _, host = links.providers(cfg)
         ledger = {r["n"]: r for r in architect_mod.ledger_rows(store)}
         view = architect_mod.run_view(run, host)
@@ -89,6 +94,17 @@ def report(ctx: Ctx) -> Response:
     title, body = arch_report.run_body(view, ledger, cfg.project, cfg.schedule.tz, _forms(ctx),
                                        criteria=architect_mod.CRITERIA)
     return ctx.render("report.html", title=title, body=Markup(body), notice=ctx.query("notice"))
+
+
+def live(ctx: Ctx) -> Response:
+    value = ctx.param("n")
+    if not value.isdigit() or len(value) > 9:
+        raise Gone()
+    view = runs.run_view(_cfg(ctx), "arch", int(value))
+    if view is None:
+        raise Gone()
+    view["report_ready"] = view["state"] == "done"  # an architecture review's report is built from runner.db
+    return runs.status_live(ctx, view)
 
 
 def findings(ctx: Ctx) -> Response:
@@ -163,4 +179,5 @@ def routes() -> list[Route]:
             Route("/architecture/findings/", page(findings)),
             Route("/architecture/findings/{n}", page(decide), methods=["POST"]),
             Route("/architecture/{n}/", page(report)),
+            Route("/architecture/{n}/live", page(live, api=True)),
             Route("/architecture/{n}/stop", page(stop), methods=["POST"])]

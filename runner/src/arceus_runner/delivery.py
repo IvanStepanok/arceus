@@ -142,6 +142,9 @@ def _parse_ts(value: str | None) -> datetime | None:
         return None
 
 
+QUESTION_KEEP = 100_000  # characters of a question kept with the task: whole, as posted, for the console's task page
+
+
 def _short(text: str, limit: int = 1500) -> str:
     text = unattributed(text).strip()
     return text if len(text) <= limit else text[:limit] + "…"
@@ -1411,8 +1414,9 @@ class Delivery:
                                  f"{self.tracker.mention(task.tag_author)}, the agent needs an answer to continue:",
                                  text, foot, visuals=self.task_media(task))[0]
         self.tracker.add_tag(task.issue_db_id, self.cfg.tracker.tags.needs_input)
-        # The words go with the state: the project's channel (notify.py) quotes them whenever it tells the question.
-        words = {"id": q.get("id"), "text": _short(text), "options": list(q.get("options") or []),
+        # The words go with the state, whole as the ticket got them: the console's task page shows them, and the
+        # project's channel (notify.py) quotes them, cut to its own length, whenever it tells the question.
+        words = {"id": q.get("id"), "text": _short(text, QUESTION_KEEP), "options": list(q.get("options") or []),
                  "blocked": show.get("state") == "blocked"}
         self.store.update_task(task.task_id, state="needs_input", question_id=q.get("id"),
                                question_at_ms=posted[1] if posted else None, question=json.dumps(words))

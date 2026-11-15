@@ -1,0 +1,31 @@
+{# What every piece of agent work shows the same way: why it is where it is, whether the live figures are current,
+   and the live figures themselves. A task, a code review, a test run and an architecture review all use these. #}
+{% set GLYPH = {"good": "✓", "busy": "●", "wait": "◐", "bad": "✕", "unknown": "?", "quiet": "■"} %}
+
+{% macro headline(why) %}
+<p class="headline {{ 'unknown' if why.tone == 'quiet' else why.tone }}" data-reason="{{ why.code }}"><span class="glyph" aria-hidden="true">{{ GLYPH[why.tone] }}</span> {{ why.title }}</p>
+{% if why.detail %}<p class="lede why">{{ why.detail }}</p>{% endif %}
+{% endmacro %}
+
+{% macro fresh_marker(fresh) %}
+{% if fresh %}
+<p class="notice {{ 'err' if fresh.tone == 'bad' else 'warn' }} stale" role="status" data-stale="{{ fresh.tone }}"><strong>{{ fresh.words }}</strong>{% if fresh.detail %} {{ fresh.detail }}{% endif %}</p>
+{% endif %}
+{% endmacro %}
+
+{# The live rows of a facts list (inside a <dl class="facts">): only for work the engine is running now. #}
+{% macro live_rows(view, now, ago, duration) %}
+<dt>Engine step</dt>
+<dd>{% if view.step %}<code class="lit">{{ view.step.stage }}</code> {{ view.step.state }}{% if view.step.since %}<span class="sub">since {{ view.step.since|at }} ({{ ago(view.step.since, now) }})</span>{% endif %}{% else %}Not known yet{% endif %}</dd>
+<dt>Agent last wrote</dt>
+<dd>{% if view.active_at %}{{ view.active_at|at }}<span class="sub">{{ ago(view.active_at, now) }}</span>{% else %}Not known: its transcript has not been found{% endif %}</dd>
+<dt>Quiet for</dt>
+<dd>{% if view.quiet is not none %}{{ duration(view.quiet) }}{% elif view.turn == "checks" %}Does not apply: the gate, the verifier or Codex has the turn{% elif view.turn == "paused" %}Does not apply: the engine is waiting{% else %}Not known{% endif %}</dd>
+<dt>Engine files read</dt>
+<dd>{% if view.observed_at %}{{ ago(view.observed_at, now) }}{% else %}Not yet{% endif %}</dd>
+{% endmacro %}
+
+{% macro runner_row(runner) %}
+<dt>Runner</dt>
+<dd><span class="value-line {{ runner.tone }}">{{ runner.words }}</span><span class="sub">{{ runner.detail }}</span></dd>
+{% endmacro %}

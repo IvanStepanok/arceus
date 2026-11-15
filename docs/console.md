@@ -112,7 +112,9 @@ What the factory does now, in one line at the top: working on a ticket (and whic
 an architecture review, idle, waiting on people, held by a failing health check, observing, or that the runner
 does not answer. Under it: whether the runner answers and when it last finished a pass, the queue, the tickets
 waiting on people, those in code review, what runs now, the latest test run and architecture review, the health
-checks that fail with their reason, and Claude's and Codex's subscription usage. The part
+checks that fail with their reason, and Claude's and Codex's subscription usage. A ticket waiting on a question
+shows the question's first line. Every ticket's key, in any of these lists, opens its page under **Tasks**, with a
+separate link to the ticket itself; every run opens its page under **Test runs** or **Architecture**. The part
 refreshes itself every 15 seconds.
 
 It comes from `runner.db` (read-only) and the runner's metrics. The runner writes its health checks with their
@@ -122,10 +124,59 @@ answering, a runner that answers but has not finished its first pass ("starting"
 pass that ended more than 15 minutes ago ("stuck"), a check without a recorded reason, a `config.yaml` that does
 not load.
 
+## Tasks
+
+**Tasks** lists the tickets the runner has queued and every task it has taken, newest change first: development,
+research, and people's merge requests it was asked to review. A ticket opens at `/tasks/<KEY>/`, queued ones
+included (before the runner has a record of the task), and shows:
+
+- **Why it is where it is**, as one of a fixed set of reasons, each in its own words: queued for the next pass, for
+  the shared workspace (and what has it), held by a failing health check, by an engine restart asked from the
+  console or by mode `observe`; the agent working, the gate, the verifier or Codex checking, the engine pausing a step,
+  a subscription window used up; opening merge requests; waiting for an answer or a decision on the ticket; held by
+  the security screen; waiting for people to review and merge, review comments on their way to the agent, a code
+  review queued or running; failed (with the runner's reason, and until when a `/continue` on the ticket resumes it),
+  stopped, done. Only a wait for an answer asks for a comment on the ticket. A used-up subscription window is said
+  to be the whole factory's, never this task's spend, and usage that is high but not used up does not make a task
+  wait.
+- **The agent's question**, whole, with its options, beside a link to the ticket where it is answered. The runner
+  keeps the question as the ticket got it; a question kept before it did so (its first 1500 characters) says the
+  ticket has the rest. Only the question the task waits on now is shown, never an earlier one's words.
+- **Now:** the state and when the record last changed; for a task the engine is running, its step and since when,
+  when the agent last wrote anything, how long it has been quiet (only while the step is the agent's own; while the
+  gate, the verifier or Codex has the turn, or the engine waits, it says so), and when the runner last read the
+  engine's files; and whether the runner answers.
+- **Limits:** the time left to answer before `needs_input_fail_after`, counted from when the question was posted
+  (unknown when that time was not recorded), and for development the review rounds that changed code, those
+  answered without a change and the CI repairs in a row, against `max_review_rounds`, `max_review_answers` and
+  `max_ci_fix_attempts`. The figures are config.yaml's now; the page says when the file has changed since the runner
+  started, since it counts with the version it started with.
+- **Merge requests:** one per repository, each with the commit Codex passed, and the branch. A research ticket says
+  nothing is published.
+- **Code reviews asked for** on the ticket, newest first, each under its own engine task (`<KEY>.review-<n>`) with its
+  state, outcome and, while it runs, its own live figures.
+- **The security screen's hold:** what kind of text was held, its code, the categories found and when, with the
+  commands a reviewer answers on the ticket. Never the text, the screen's reason, or people's comments waiting for the
+  agent.
+
+Live figures come from the runner's metrics and are as old as its last pass. When the runner does not answer, has not
+finished its first pass, or its last pass ended more than 15 minutes ago, the page says the figures are unknown or
+out of date. When the runner has not read the task's engine files for three progress polls (`poll_progress`, at least
+five minutes), or not at all yet, it says that too. A task that is over is never marked out of date: its record is
+final. Figures are matched to the task by its engine task id, so another task's or a code review's are never shown
+as this one's.
+
+The state, the reason, the live figures and the limits refresh themselves every 15 seconds; the question does not, so
+reading it is never interrupted. Nothing on the page acts: answers, `/continue` and security decisions stay on the
+ticket, and reloading the page repeats nothing. An unknown or malformed key is not found.
+
 ## Test runs
 
-**Test runs** lists every run of the platform test, newest first, queued and running ones included, and opens a
-finished one as its report: the verdict, what was checked, each problem with its steps, its screenshots and videos
+**Test runs** lists every run of the platform test, newest first, queued and running ones included. Each opens at
+`/qa/<n>/`: before its report, as where the run is (queued, and for what; under way, with its step, the agent's
+activity and the same freshness marks as a task's page; the stop it was asked for), refreshing itself until the report
+is written; a finished run whose report is missing says so instead of showing a result. A finished one opens as its
+report: the verdict, what was checked, each problem with its steps, its screenshots and videos
 at the step they show, expected against actual and the suspected cause with links into the code. The list stays
 when `qa.enabled` is false; it says that none start. Only the report's own files are served: a run's media by its
 exact name, never the copy of the instructions a run keeps (it holds the test accounts), `result.json` or any other
@@ -141,7 +192,8 @@ would get: an instructions file that is empty without its comments, or too large
 ## Architecture
 
 **Architecture** lists the reviews and a count of open, decided and fixed findings; **All findings** shows every
-finding kept. A review opens as its report, built from `runner.db` on every visit. Each finding shows Codex's
+finding kept. A review queued or under way opens at `/architecture/<n>/` as where it is, as a test run does. A
+finished review opens as its report, built from `runner.db` on every visit. Each finding shows Codex's
 second check apart from the person's decision.
 
 People with the architect role and admins decide: **Accept the risk** or **False positive**, each with a reason,
@@ -244,7 +296,7 @@ combine:
 
 | Role | What it adds |
 |---|---|
-| (none) | sees the status, the reports, the findings and the monitoring; changes nothing |
+| (none) | sees the status, the tasks, the reports, the findings and the monitoring; changes nothing |
 | QA | starts and stops test runs of the platform, edits their instructions |
 | Architect | decides on architecture findings, starts and stops reviews, edits their instructions |
 | Operator | sees the settings, restarts the runner and the engine, runs the setup check |

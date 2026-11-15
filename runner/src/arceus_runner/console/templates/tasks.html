@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Tasks</h1>
+<p class="lede">Every ticket the runner has taken or queued: development, research, and people's merge requests it was asked to review. Each opens on its own page with where it is and why it waits.</p>
+
+{% if queue %}
+<h2>Queued</h2>
+<ul class="rows">
+  {% for q in queue %}
+  <li><span class="tag quiet">Queued</span><span class="what"><a href="/tasks/{{ q.key }}/">{{ q.key }}</a>{% if q.url %}<span class="note"><a href="{{ q.url }}" target="_blank" rel="noopener">The ticket<span class="external" aria-hidden="true">↗</span><span class="sr"> (opens in a new tab)</span></a></span>{% endif %}</span></li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+<h2>Taken</h2>
+{% if tasks %}
+<div class="table-wrap">
+<table class="task-table">
+  <thead><tr><th>Ticket</th><th>State</th><th class="hide-narrow">Kind</th><th class="hide-narrow">Last change</th></tr></thead>
+  <tbody>
+  {% for t in tasks %}
+  <tr>
+    <td><a href="/tasks/{{ t.key }}/">{{ t.key }}</a>{% if t.summary %}<span class="run-summary">{{ t.summary }}</span>{% endif %}</td>
+    <td><span class="tag {{ 'busy' if t.state in ('claimed', 'dispatched', 'publishing') else 'wait' if t.state in ('needs_input', 'security_hold') else 'bad' if t.state == 'failed' else 'ok' if t.state == 'done' else 'quiet' }}">{{ t.words }}</span></td>
+    <td class="hide-narrow">{{ t.kind }}</td>
+    <td class="hide-narrow nowrap">{{ t.updated_at|when }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if total > limit %}<p class="note spaced-top">The newest {{ limit }} of {{ total }}.</p>{% endif %}
+{% else %}
+<p class="empty">The runner has not taken a ticket yet.</p>
+{% endif %}
+{% endblock %}

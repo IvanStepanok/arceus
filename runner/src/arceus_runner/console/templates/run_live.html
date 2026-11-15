@@ -1,0 +1,22 @@
+{% from "execution.html" import headline, fresh_marker, live_rows, runner_row %}
+{% if r.report_ready %}
+<p class="headline good" data-reason="report_ready" data-final><span class="glyph" aria-hidden="true">✓</span> Finished: the report is written</p>
+<p><a class="btn primary" href="{{ r.base }}{{ r.n }}/">Open the report</a></p>
+{% else %}
+{{ headline(r.why) }}
+{{ fresh_marker(r.fresh) }}
+<section class="card">
+  <h2>Now</h2>
+  <dl class="facts">
+    <dt>State</dt>
+    <dd>{{ r.words }}{% if r.stop_asked and r.state != "done" %} <span class="tag wait">Stop asked</span>{% endif %}<span class="sub">record last changed {{ r.updated_at|when }}</span></dd>
+    {% if r.live %}{{ live_rows(r.live, r.now, ago, duration) }}{% endif %}
+    {{ runner_row(r.runner) }}
+    <dt>Asked by</dt><dd>{{ "Schedule" if r.source == "schedule" else r.requested_by }}<span class="sub">queued {{ r.created_at|when }}</span></dd>
+    {% if r.started_at %}<dt>Started</dt><dd>{{ r.started_at|when }}</dd>{% endif %}
+    {% if r.finished_at %}<dt>Finished</dt><dd>{{ r.finished_at|when }}</dd>{% endif %}
+    <dt>Engine task</dt><dd><code class="lit">{{ r.id }}</code></dd>
+  </dl>
+</section>
+<p class="refreshed"{% if r.state == "done" %} data-final{% endif %}>Updated {{ ctx.app.now_text() }}.{% if r.state != "done" %} This part refreshes by itself; the report opens here once it is written.{% endif %}</p>
+{% endif %}

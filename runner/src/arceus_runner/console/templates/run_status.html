@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% from "macros.html" import csrf_field %}
+{% block body %}
+<p class="crumb"><a href="{{ r.base }}">{{ r.list }}</a> / Run {{ r.n }}</p>
+<h1>{{ r.title }}</h1>
+<p class="meta">{% if r.kind == "qa" %}The agent tests the whole platform in a browser by the test instructions.{% else %}The agent reviews the architecture; Codex checks each finding before the report goes out.{% endif %}</p>
+<div data-refresh="{{ r.base }}{{ r.n }}/live" data-every="15" aria-live="polite">
+{% include "run_live.html" %}
+</div>
+{% if can_stop %}
+<div class="toolbar spaced-top">
+  <form method="post" action="{{ r.base }}{{ r.n }}/stop">{{ csrf_field(csrf) }}<button class="btn danger" type="submit" data-confirm="Stop run {{ r.n }}? Its report says what it found so far.">Stop this run</button></form>
+</div>
+{% endif %}
+{% endblock %}

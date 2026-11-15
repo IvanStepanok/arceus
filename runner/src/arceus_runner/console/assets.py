@@ -202,6 +202,29 @@ pre.diff span { display: block; padding: 0 14px; white-space: pre; }
 pre.diff .add { background: var(--good-soft); } pre.diff .del { background: var(--bad-soft); }
 pre.diff .ctx { color: var(--muted); }
 
+/* a task's page and a run's before its report */
+.task-title { overflow-wrap: anywhere; }
+.task-title span { font-weight: 500; color: var(--muted); }
+.task-meta { margin: 0 0 20px; overflow-wrap: anywhere; }
+.lede.why { margin-top: -12px; }
+.task-head { margin-bottom: 4px; }
+.task-facts { margin-top: 16px; }
+.stale strong { font-weight: 600; }
+.facts .sub { display: block; color: var(--muted); font-size: 0.85rem; }
+.facts .value-line { font-weight: 600; }
+.value-line.bad { color: var(--bad); }
+.task-split { grid-template-columns: minmax(0, 1fr) minmax(0, 22rem); gap: 0 24px; }
+.task-split .note, .card > .note { color: var(--muted); font-size: 0.875rem; }
+.question-text { white-space: pre-wrap; overflow-wrap: anywhere; padding: 14px 16px; border-radius: 6px;
+                 background: var(--bg); border: 1px solid var(--line); }
+.question .options { margin: 12px 0 0; padding-left: 24px; overflow-wrap: anywhere; }
+.question .answer-here { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 16px 0 0; }
+.question .answer-here .note { color: var(--muted); font-size: 0.875rem; }
+.mr-rows .tag.ok { color: var(--good); background: var(--good-soft); }
+.branch { margin: 10px 0 0; color: var(--muted); font-size: 0.9rem; overflow-wrap: anywhere; }
+.review h3 { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; margin: 0 0 12px; }
+.review .stale { margin: 0 0 12px; }
+
 /* settings */
 .settings-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .settings-groups .count-note { color: var(--quiet); font-size: 0.8rem; margin-top: 4px; }
@@ -243,7 +266,7 @@ pre.oplog { margin: 0; padding: 12px 14px; max-height: 32rem; overflow: auto; ba
             border: 1px solid var(--line); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere;
             font: 0.825rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 @media (max-width: 760px) {
-  .split { grid-template-columns: 1fr; }
+  .split, .task-split { grid-template-columns: 1fr; }
   .roles-help li { grid-template-columns: 1fr; gap: 2px; }
   .settings-groups, .ops-links { grid-template-columns: 1fr; }
   .bar-in { gap: 0 12px; }

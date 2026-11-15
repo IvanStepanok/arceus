@@ -39,6 +39,11 @@ class Metrics:
     health: dict[str, int] = field(default_factory=dict)        # check -> 0 ok, 1 warn, 2 fail
     usage: dict[tuple[str, str], float] = field(default_factory=dict)   # (provider, window) -> percent
     resets: dict[tuple[str, str], float] = field(default_factory=dict)  # (provider, window) -> epoch
+    # Per engine task id (a ticket's key, <key>.review-<n>, qa-<n>, arch-<n>), only while the runner follows it:
+    steps: dict[str, tuple[str, str, float]] = field(default_factory=dict)  # id -> (stage, state, since epoch)
+    active: dict[str, float] = field(default_factory=dict)    # id -> when the agent's transcript last changed
+    quiet: dict[str, float] = field(default_factory=dict)     # id -> seconds quiet while the step is the agent's
+    observed: dict[str, float] = field(default_factory=dict)  # id -> when the runner last read its engine files
 
 
 def read_metrics(cfg: Config, timeout: float = 2.0) -> Metrics:
@@ -69,14 +74,37 @@ def read_metrics(cfg: Config, timeout: float = 2.0) -> Metrics:
                 m.usage[(labels.get("provider", ""), labels.get("window", ""))] = value
             elif name == "runner_usage_resets_at_seconds":
                 m.resets[(labels.get("provider", ""), labels.get("window", ""))] = value
+            elif name == "runner_task_step_since_seconds" and labels.get("task_id"):
+                m.steps[labels["task_id"]] = (labels.get("stage", ""), labels.get("state", ""), value)
+            elif name == "runner_agent_last_activity_seconds" and labels.get("task_id"):
+                m.active[labels["task_id"]] = value
+            elif name == "runner_agent_quiet_seconds" and labels.get("task_id"):
+                m.quiet[labels["task_id"]] = value
+            elif name == "runner_engine_observed_seconds" and labels.get("task_id"):
+                m.observed[labels["task_id"]] = value
     return m
 
+
+
+def question_line(t, limit: int = 160) -> str:
+    """The first line of the question a task waits on, for a list; '' when it waits on none or the record keeps an
+    earlier question's words. The task's page shows it whole."""
+    if t.state != "needs_input" or not getattr(t, "question", None):
+        return ""
+    try:
+        q = json.loads(t.question)
+    except ValueError:
+        return ""
+    if not isinstance(q, dict) or q.get("id") != t.question_id or not isinstance(q.get("text"), str):
+        return ""
+    line = next((x.strip() for x in q["text"].splitlines() if x.strip()), "")
+    return line if len(line) <= limit else line[:limit].rstrip() + "…"
 
 
 def _task(t, issue_url) -> dict:
     return {"key": t.task_id, "summary": t.summary, "state": t.state, "words": STATE_WORDS.get(t.state, t.state),
             "url": issue_url(t.task_id) if issue_url else "", "since": t.updated_at, "author": t.tag_author,
-            "question": getattr(t, "question", None) or "", "reason": t.reason or ""}
+            "question_line": question_line(t), "reason": t.reason or ""}
 
 
 def read_store(cfg: Config, issue_url=None) -> dict:
@@ -136,25 +164,33 @@ def ago(epoch: float | None, now: float | None = None) -> str:
     return f"{s // 86400} d ago"
 
 
+def runner_status(m: Metrics, now: float) -> dict:
+    """Whether the runner answers and passes: {tone, words, detail, stuck, starting, fresh}. Only a fresh runner's
+    metrics say what is going on now; otherwise they are as old as its last pass, or not there at all."""
+    stuck = bool(m.answered and m.last_tick and now - m.last_tick > STUCK_AFTER)
+    starting = bool(m.answered and not m.last_tick)
+    if not m.answered:
+        out = {"tone": "bad", "words": "Not answering", "detail": m.error}
+    elif starting:
+        out = {"tone": "unknown", "words": "Starting", "detail": "its first pass has not finished yet"}
+    elif stuck:
+        out = {"tone": "bad", "words": "Stuck", "detail": f"its last pass ended {ago(m.last_tick, now)}"}
+    else:
+        out = {"tone": "good", "words": "Running", "detail": f"last pass {ago(m.last_tick, now)}"}
+    return {**out, "stuck": stuck, "starting": starting, "fresh": out["tone"] == "good"}
+
+
 def snapshot(cfg: Config, issue_url=None, now: float | None = None) -> dict:
     """The home page's facts and its one-line headline: (tone, words). Tones: good, busy, wait, bad, unknown."""
     now = now or time.time()
     m = read_metrics(cfg)
     db = read_store(cfg, issue_url)
-    stuck = bool(m.answered and m.last_tick and now - m.last_tick > STUCK_AFTER)
-    starting = m.answered and not m.last_tick
+    runner = runner_status(m, now)
+    stuck, starting = runner["stuck"], runner["starting"]
     recorded = db.get("health") or {}
     failing = [{"check": k, "status": "fail" if v == 2 else "warn", "detail": (recorded.get(k) or {}).get("detail", ""),
                 "since": (recorded.get(k) or {}).get("since")} for k, v in sorted(m.health.items()) if v]
     failing.sort(key=lambda c: c["status"] != "fail")
-    if not m.answered:
-        runner = {"tone": "bad", "words": "Not answering", "detail": m.error}
-    elif starting:
-        runner = {"tone": "unknown", "words": "Starting", "detail": "its first pass has not finished yet"}
-    elif stuck:
-        runner = {"tone": "bad", "words": "Stuck", "detail": f"its last pass ended {ago(m.last_tick, now)}"}
-    else:
-        runner = {"tone": "good", "words": "Running", "detail": f"last pass {ago(m.last_tick, now)}"}
     mode = m.mode or cfg.mode
 
     tone, words = "good", "Idle: nothing is queued"
