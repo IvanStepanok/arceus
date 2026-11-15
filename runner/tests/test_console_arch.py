@@ -11,10 +11,13 @@ import pytest
 import yaml
 
 pytest.importorskip("starlette")
+from starlette.testclient import TestClient  # noqa: E402
 
+from arceus_runner.config import load_config  # noqa: E402
 from arceus_runner.console.store import ConsoleStore  # noqa: E402
-from arceus_runner.console.web import Settings  # noqa: E402
+from arceus_runner.console.web import Settings, create_app  # noqa: E402
 from arceus_runner.db import ReviewStore  # noqa: E402
+from arceus_runner.workspace_run import report_address  # noqa: E402
 
 from tests.conftest import example_raw  # noqa: E402
 from tests.test_console_auth import csrf_of, make_admin, post, signed_in  # noqa: E402
@@ -51,7 +54,7 @@ def w(tmp_path: Path):
     class W:
         pass
     x = W()
-    x.settings, x.db = settings, tmp_path / "runner.db"
+    x.settings, x.db, x.raw, x.config = settings, tmp_path / "runner.db", raw, config
     return x
 
 
@@ -66,6 +69,21 @@ def test_the_list_shows_the_reviews_and_the_findings_strip(w):
     assert "Run 1" in page and "2 findings" in page and "Two findings in billing." in page
     assert "2 open findings" in page and "0 decided" in page
     assert "Start a review" not in page
+
+
+def test_the_link_a_finished_review_is_told_with_opens_its_report_after_signing_in(w):
+    w.raw["console"] = {"enabled": True, "public_url": "https://console.example.com"}
+    w.config.write_text(yaml.safe_dump(w.raw))
+    url, tunnel = report_address(load_config(w.config), "arch", 3301, 1)
+    assert (url, tunnel) == ("https://console.example.com/architecture/1/", False)  # not /arch/: the route's name
+    path = url.removeprefix("https://console.example.com")
+    r = TestClient(create_app(w.settings), base_url="https://console.example.com").get(path, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/login?next=%2Farchitecture%2F1%2F"
+    page = person(w.settings, "a@example.com", set()).get(path).text
+    assert "Two findings in billing." in page
+    w.raw["console"]["enabled"] = False
+    w.config.write_text(yaml.safe_dump(w.raw))
+    assert report_address(load_config(w.config), "arch", 3301, 1) == ("http://localhost:3301/1/", True)
 
 
 def test_the_report_shows_codexs_check_apart_from_the_persons_decision(w):

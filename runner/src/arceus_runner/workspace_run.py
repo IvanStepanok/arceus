@@ -31,6 +31,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from arceus_runner.code_review import ReviewAgent
+from arceus_runner.config import Config
 from arceus_runner.db import RUN_UNDER_WAY, AgentRun, ReviewStore, Task
 from arceus_runner.delivery import ProjectNotesError, project_notes
 from arceus_runner.engine import EngineError, ReportReview
@@ -41,6 +42,8 @@ from arceus_runner.screening import trusted
 
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 SLOT_GRACE = timedelta(hours=1)   # a scheduled time is queued within this long after it, never later
+# Where the console shows a kind's reports (console/views_qa.py, views_arch.py): its routes are at the root.
+CONSOLE_PATHS = {"qa": "/qa/", "arch": "/architecture/"}
 MAX_INSTRUCTIONS = 64 * 1024  # without comments; the brief is one argv string, and Linux caps one at 128 KB
 
 
@@ -76,6 +79,16 @@ def read_instructions(path: Path, required: bool = True) -> tuple[str | None, st
     if len(text.encode()) > MAX_INSTRUCTIONS:
         return None, f"the instructions file {path} is larger than {MAX_INSTRUCTIONS // 1024} KB without comments"
     return text + "\n", ""
+
+
+def report_address(cfg: Config, kind: str, port: int, n: int | None = None) -> tuple[str, bool]:
+    """Where a kind's reports are read, and whether that is through the SSH tunnel: the console's page while the
+    console is on (the runner then serves no report pages of its own), the runner's page on localhost otherwise. No
+    run number: the list of them."""
+    tail = f"{n}/" if n is not None else ""
+    if cfg.console.enabled:
+        return cfg.console.public_url.rstrip("/") + CONSOLE_PATHS[kind] + tail, False
+    return f"http://localhost:{port}/{tail}", True
 
 
 def write_atomic(path: Path, text: str) -> None:
@@ -155,8 +168,8 @@ class WorkspaceRun:
     def _extra_dirs(self, run: AgentRun) -> Path:
         return self.cfg.paths.db.parent / "tasks" / run.id / "extra-dirs.txt"
 
-    def report_url(self, run: AgentRun) -> str:
-        return f"http://localhost:{self.c.port}/{run.n}/"
+    def report_address(self, run: AgentRun) -> tuple[str, bool]:
+        return report_address(self.cfg, self.KIND, self.c.port, run.n)
 
     def _note_waiting(self, run: AgentRun, reason: str, **fields) -> None:
         seen = (reason, *sorted((k, str(v)) for k, v in fields.items()))
@@ -598,8 +611,9 @@ class WorkspaceRun:
         run = self.store.update_run(run.id, state="done", finished_at=finished)
         self.write_index()
         result = json.loads(run.result or "{}")
+        url, tunnel = self.report_address(run)
         self.emit("published", task_id=run.id, run=run.n, outcome=run.outcome,
-                  findings=len(result.get("findings") or []), url=self.report_url(run))
+                  findings=len(result.get("findings") or []), url=url, tunnel=tunnel)
 
     def view(self, run: AgentRun, finished: str | None) -> dict:
         """Everything a report shows of a run."""

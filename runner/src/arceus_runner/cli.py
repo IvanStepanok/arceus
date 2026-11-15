@@ -23,7 +23,7 @@ from arceus_runner.events import EventLog
 from arceus_runner.integrations import build_code_host, build_tracker
 from arceus_runner.loop import IntegrationChanged, LiveModeUnavailable, make_cleanup, require_mode_ready, run
 from arceus_runner.notify import test_message, webhook_state
-from arceus_runner.workspace_run import read_instructions
+from arceus_runner.workspace_run import read_instructions, report_address
 from arceus_runner.slack import Webhook
 
 EXIT_OK = 0
@@ -266,8 +266,9 @@ def cmd_runs(args) -> int:
             if cfg.mode != "live":
                 print(f"{kind}: the runner is in mode: {cfg.mode}, which starts nothing; run {run.n} waits until it is "
                       "live", file=sys.stderr)
+            url, tunnel = report_address(cfg, kind, c.port, run.n)
             print(f"Run {run.n} queued. The runner starts it once the workspace is free; the report will be at "
-                  f"http://localhost:{c.port}/{run.n}/ (through the SSH tunnel).")
+                  f"{url}{' (through the SSH tunnel)' if tunnel else ''}.")
             return EXIT_OK
         if args.action == "stop":
             runs = [store.run(f"{kind}-{args.n}")] if args.n else store.runs(kind, *RUN_UNDER_WAY)
@@ -296,7 +297,8 @@ def cmd_runs(args) -> int:
             print(f"run {r.n}: {what} (by {by}, queued {r.created_at}"
                   + (f", finished {r.finished_at}" if r.finished_at else "") + ")"
                   + (f": {r.reason}" if r.reason and r.state == "done" else ""))
-        print(f"Reports: http://localhost:{c.port}/ (through the SSH tunnel)")
+        url, tunnel = report_address(cfg, kind, c.port)
+        print(f"Reports: {url}{' (through the SSH tunnel)' if tunnel else ''}")
         return EXIT_OK
     finally:
         store.close()

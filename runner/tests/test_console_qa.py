@@ -13,9 +13,11 @@ import yaml
 pytest.importorskip("starlette")
 from starlette.testclient import TestClient  # noqa: E402
 
+from arceus_runner.config import load_config  # noqa: E402
 from arceus_runner.console.store import ConsoleStore  # noqa: E402
 from arceus_runner.console.web import Settings, create_app  # noqa: E402
 from arceus_runner.db import ReviewStore  # noqa: E402
+from arceus_runner.workspace_run import report_address  # noqa: E402
 
 from tests.conftest import example_raw  # noqa: E402
 from tests.test_console_auth import PASSWORD, csrf_of, make_admin, post, signed_in  # noqa: E402
@@ -98,6 +100,32 @@ def test_with_qa_off_the_old_reports_stay_and_the_page_says_why_none_start(w):
     assert "Start a test run" not in page
     r = qa.post("/qa/", data={"csrf": csrf_of(page)})
     assert r.status_code == 400 and "nothing was queued" in r.text
+
+
+def test_the_link_a_finished_run_is_told_with_opens_its_report_after_signing_in(w):
+    w.raw["console"] = {"enabled": True, "public_url": "https://console.example.com"}
+    w.config.write_text(yaml.safe_dump(w.raw))
+    url, tunnel = report_address(load_config(w.config), "qa", 3300, 1)
+    assert (url, tunnel) == ("https://console.example.com/qa/1/", False)
+    path = url.removeprefix("https://console.example.com")
+    r = TestClient(create_app(w.settings), base_url="https://console.example.com").get(path, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/login?next=%2Fqa%2F1%2F"
+    page = person(w.settings, "v@example.com", set()).get(path).text
+    assert "Platform test, run 1" in page and f'src="media/{SHOT}"' in page
+
+
+@pytest.mark.parametrize("enabled, queued, listed", [
+    (True, "the report will be at https://console.example.com/qa/2/.", "Reports: https://console.example.com/qa/\n"),
+    (False, "the report will be at http://localhost:3300/2/ (through the SSH tunnel).",
+     "Reports: http://localhost:3300/ (through the SSH tunnel)\n")])
+def test_the_command_points_at_the_same_reports(w, capsys, enabled, queued, listed):
+    from arceus_runner import cli
+    w.raw["console"] = {"enabled": enabled, "public_url": "https://console.example.com"}
+    w.config.write_text(yaml.safe_dump(w.raw))
+    assert cli.main(["--config", str(w.config), "qa", "run"]) == 0
+    assert queued in capsys.readouterr().out
+    assert cli.main(["--config", str(w.config), "qa", "status"]) == 0
+    assert capsys.readouterr().out.endswith(listed)
 
 
 def test_a_run_opens_as_its_report_with_its_screenshot(w):

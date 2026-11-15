@@ -101,7 +101,10 @@ invitation; exits 0 only if all of it holds):
 ```bash
 bash setup/checks/console-live.sh https://console.example.com user@vm -p 22 --owner you@example.com --since 2026-11-08T23:20
 ``` While the console is
-on, the runner no longer serves the old report pages on `qa.port` and `architect.port`.
+on, the runner no longer serves the old report pages on `qa.port` and `architect.port`: the Slack notice of a
+finished test run or architecture review links the report's page in the console instead (`public_url` + `/qa/<n>/`
+or `/architecture/<n>/`), and so do `arceus-runner qa` and `architect`. Signed out, the link opens the sign-in and
+then that report.
 
 ## Home
 

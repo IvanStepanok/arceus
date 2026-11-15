@@ -438,6 +438,7 @@ def test_a_test_run_of_the_platform_is_told_when_it_starts_and_ends_with_its_sum
     assert "Report (through the SSH tunnel): http://localhost:3300/1/" in result
     b.events.emit("qa_published", task_id=run.id, run=run.n, outcome="found", findings=2, url="x")
     assert b.flush() == []  # told once
+
     # The agent's activity while it tests reads as the run, not as a ticket.
     b.events.emit("agent_quiet", task_id=run.id, minutes=20, ts="t1")
     [quiet] = b.flush()
@@ -451,6 +452,16 @@ def test_a_test_run_of_the_platform_is_told_when_it_starts_and_ends_with_its_sum
     [told] = b.flush()
     assert told.startswith("⚠️ Platform test did not finish: run 2.")
     assert "Why: every check was skipped: nothing was tested" in told and "no problems" not in told
+
+
+@pytest.mark.parametrize("kind, url", [("qa", "https://console.example.com/qa/1/"),
+                                       ("arch", "https://console.example.com/architecture/1/")])
+def test_a_finished_run_links_its_console_page_without_a_word_of_the_tunnel(b, kind, url):
+    run = b.store.add_run(kind, "command", "ops")
+    b.store.update_run(run.id, state="done", outcome="found", result=json.dumps({"findings": [{}]}))
+    b.events.emit(f"{kind}_published", task_id=run.id, run=run.n, outcome="found", findings=1, url=url, tunnel=False)
+    [told] = b.flush()
+    assert f"Report: {url}" in told and "tunnel" not in told
 
 
 def test_a_test_run_whose_report_did_not_pass_its_closing_review_is_told_so(b):

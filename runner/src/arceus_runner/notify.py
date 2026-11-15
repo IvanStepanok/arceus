@@ -142,6 +142,11 @@ def started_how(r: dict) -> str:
     return ", on schedule" if r.get("source") == "schedule" else ""
 
 
+def report_line(r: dict) -> str:
+    """The report's link in a run's closing notice. An event written before it said how (`tunnel`) was on localhost."""
+    return f"Report{' (through the SSH tunnel)' if r.get('tunnel', True) else ''}: {r.get('url')}"
+
+
 def ago(seconds: float) -> str:
     minutes = max(0, int(seconds // 60))
     if minutes < 60:
@@ -593,7 +598,7 @@ class Notifier:
         if run.reason and run.outcome not in ("found", "passed", "partial"):
             # Why this is not a clean result, in the runner's words: the agent's summary may sound like one.
             lines.append(f"Why: {esc(clip(run.reason, 300))}")
-        lines.append(f"Report (through the SSH tunnel): {r.get('url')}")
+        lines.append(report_line(r))
         self.put(f"qa:{run.id}:published", "qa_published", TRANSITION, "\n".join(lines))
 
     def _on_arch_dispatched(self, r: dict) -> None:
@@ -622,7 +627,7 @@ class Notifier:
             lines.append(esc(summary_text(result["summary"], 600)))
         if run.reason and run.outcome not in ("found", "clean", "partial", "unchanged"):
             lines.append(f"Why: {esc(clip(run.reason, 300))}")
-        lines.append(f"Report (through the SSH tunnel): {r.get('url')}")
+        lines.append(report_line(r))
         self.put(f"arch:{run.id}:published", "arch_published", TRANSITION, "\n".join(lines))
 
     def _on_agent_activity(self, r: dict) -> None:

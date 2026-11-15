@@ -32,12 +32,14 @@ def no_real_tools(monkeypatch):
 
 
 def world(tmp_path, instructions: str | None = "Platform: https://staging.example.com\nCheck sign-in.\n",
-          **qa) -> World:
+          console: dict | None = None, **qa) -> World:
     path = tmp_path / "qa" / "instructions.md"
     if instructions is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(instructions)
     settings = {"qa": {"enabled": True, "instructions": str(path), "reports": str(tmp_path / "reports"), **qa}}
+    if console:
+        settings["console"] = console
     return World(tmp_path, Secrets(tracker=YT_TOKEN, code_host=GL_TOKEN, slack=None), settings=settings)
 
 
@@ -140,7 +142,24 @@ def test_a_finished_run_gets_its_report_and_the_workspace_back(w):
     assert w.runner.delivery.workspace_taken() is None
     [published] = w.events_named("qa_published")
     assert (published["outcome"], published["findings"]) == ("found", 1)
-    assert published["url"] == "http://localhost:3300/1/"
+    assert published["url"] == "http://localhost:3300/1/" and published["tunnel"] is True
+
+
+@pytest.mark.parametrize("console, url, tunnel", [
+    ({"enabled": True, "public_url": "https://console.example.com"}, "https://console.example.com/qa/1/", False),
+    # An address kept for later does not count while the console is off: it serves nothing then.
+    ({"enabled": False, "public_url": "https://console.example.com"}, "http://localhost:3300/1/", True)])
+def test_the_published_report_is_where_it_can_be_opened(tmp_path, console, url, tunnel):
+    w = world(tmp_path, console=console)
+    try:
+        queue(w)
+        report(w)
+        finish(w)
+        [published] = w.events_named("qa_published")
+        assert (published["url"], published["tunnel"]) == (url, tunnel)
+    finally:
+        w.events.close()
+        w.store.close()
 
 
 def test_a_run_that_could_not_test_says_so_and_never_passes(w):
