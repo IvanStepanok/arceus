@@ -324,7 +324,8 @@ document.addEventListener('submit', function (ev) {
 // whole by what the URL answers. Stops while the tab is hidden. One request at a time: one that has not answered
 // within a round is given up, so a connection that hangs never piles requests up. When the page has a [data-lost]
 // notice, it shows once nothing has been answered for two rounds, whether the requests failed or hang, with the time
-// of the last answer in [data-lost-at], and hides on the next answer. When the page has a [data-announce] live
+// of the last answer in [data-lost-at], and hides on the next answer. Back in a hidden tab, it asks at once and gives
+// the server two rounds again before the notice, which still names the time of the last real answer. When the page has a [data-announce] live
 // region, a screen reader hears the part's headline ([data-reason]) only when it changes, never the part every round.
 (function () {
   var parts = document.querySelectorAll('[data-refresh]');
@@ -334,17 +335,19 @@ document.addEventListener('submit', function (ev) {
   var reasonOf = function (el) { var h = el.querySelector('[data-reason]'); return h ? h.getAttribute('data-reason') : ''; };
   parts.forEach(function (el) {
     var every = Math.max(3, parseInt(el.getAttribute('data-every') || '10', 10)) * 1000;
-    var answered = Date.now();
+    var answered = Date.now();  // the last answer; only an answer moves it
+    var resumed = 0;            // when the tab was shown again: the two rounds count from then too
     var pending = null;
     var watch = function () {
-      if (lost && Date.now() - answered > 2 * every) {
+      if (lost && Date.now() - Math.max(answered, resumed) > 2 * every) {
         if (lostAt) lostAt.textContent = new Date(answered).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', hour12: false});
         lost.hidden = false;
       }
     };
     var tick = function () {
+      if (document.hidden) return;
       watch();
-      if (document.hidden || pending) return;
+      if (pending) return;
       var ctl = window.AbortController ? new AbortController() : null;
       pending = setTimeout(function () { if (ctl) ctl.abort(); }, every);
       fetch(el.getAttribute('data-refresh'), {credentials: 'same-origin', headers: {'Accept': 'text/html'},
@@ -373,7 +376,11 @@ document.addEventListener('submit', function (ev) {
     var timer = setInterval(tick, every);
     // The notice does not wait for a request to end: a hanging one is noticed while it hangs.
     var watcher = setInterval(function () { if (!document.hidden) watch(); }, 1000);
-    document.addEventListener('visibilitychange', function () { if (!document.hidden) answered = Math.max(answered, Date.now() - every); });
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) return;
+      resumed = Date.now();
+      tick();
+    });
   });
 })();
 // A page of parts that follow the server together: data-refresh-parts="<url>" every data-every seconds. The URL

@@ -195,7 +195,9 @@ when it was counted. The runner reads `plan.md` in the workspace on each pass an
 because the console cannot see the workspace and the plan goes with it. A plan not written yet, not in its form, or
 unreadable is said so, never shown as numbers. The stop button refreshes with the page and goes once the run is over
 or a stop was asked. When the console has not answered for two rounds, whether its answers fail or never come, a notice says since when
-the page has not updated; a request that hangs is given up after one round, so they never pile up. A finished one opens as its
+the page has not updated; a request that hangs is given up after one round, so they never pile up. A tab shown again
+after being hidden asks at once, and the notice, if the console still does not answer, names the time of the last
+answer it really gave. A finished one opens as its
 report: the verdict, what was checked, each problem with its steps, its screenshots and videos
 at the step they show, expected against actual and the suspected cause with links into the code. The list stays
 when `qa.enabled` is false; it says that none start. Only the report's own files are served: a run's media by its

@@ -19,7 +19,8 @@ const el = (attrs = {}) => ({ attrs, hidden: false, textContent: '', innerHTML: 
 const part = el({'data-refresh': '/qa/1/live', 'data-every': '15'});
 part.innerHTML = '<p data-reason="working">old</p>';
 const lost = el(); lost.hidden = true; const lostAt = el(); const announce = el();
-const document = { hidden: false, addEventListener() {}, querySelectorAll: s => s === '[data-refresh]' ? [part] : [],
+const handlers = {};
+const document = { hidden: false, addEventListener(ev, fn) { (handlers[ev] = handlers[ev] || []).push(fn); }, querySelectorAll: s => s === '[data-refresh]' ? [part] : [],
   querySelector: s => ({'[data-lost]': lost, '[data-lost-at]': lostAt, '[data-announce]': announce})[s] || null };
 let mode = 'ok', inFlight = 0, maxInFlight = 0, sent = 0, aborted = 0;
 const fetch = (url, opts) => { sent++; inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
@@ -52,5 +53,25 @@ const fail = m => { console.error('FAIL: ' + m); process.exit(1); };
   for (let s = 0; s < 31; s++) { advance(1000); await flush(); await flush(); }
   if (!lost.hidden) fail('notice still shown after the console answered again');
   if (!part.innerHTML.includes('fresh')) fail('part not refreshed after recovery');
+  // Hidden after an answer, the server lost meanwhile, the tab shown again: the notice comes two rounds later and names
+  // the time of the last real answer, not the time the tab came back.
+  advance(15000); await flush(); await flush();
+  const lastAnswer = now;
+  const hhmm = t => new FakeDate(t).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', hour12: false});
+  document.hidden = true; mode = 'hang';
+  advance(10 * 60000); await flush();
+  if (!lost.hidden) fail('notice shown while the tab was hidden and never asked');
+  document.hidden = false; const back = now; const before = sent;
+  (handlers.visibilitychange || []).forEach(fn => fn());
+  await flush();
+  if (sent === before) fail('no request at once when the tab came back');
+  let shownBack = null;
+  for (let s = 0; s < 45; s++) { advance(1000); await flush(); await flush(); if (!lost.hidden && shownBack === null) shownBack = now - back; }
+  if (shownBack === null) fail('notice never shown after coming back to a lost server');
+  if (shownBack < 29000) fail('notice shown ' + shownBack + ' ms after coming back, before two rounds');
+  if (lostAt.textContent !== hhmm(lastAnswer)) fail('notice names ' + lostAt.textContent + ', the last answer was ' + hhmm(lastAnswer) + ' (back at ' + hhmm(back) + ')');
+  mode = 'ok';
+  for (let s = 0; s < 31; s++) { advance(1000); await flush(); await flush(); }
+  if (!lost.hidden) fail('notice still shown after the console answered again (after the tab came back)');
   console.log(`ok: notice after ${shownAfter / 1000} s of hanging, ${sent} requests, max ${maxInFlight} in flight, ${aborted} aborted, hidden again after recovery`);
 })();
