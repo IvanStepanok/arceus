@@ -42,10 +42,7 @@ from pathlib import Path
 from arceus_runner import arch_report
 from arceus_runner.code_review import path_glob
 from arceus_runner.db import FindingChanged, AgentRun, ReviewStore
-from arceus_runner.gitops import GitError
-from arceus_runner.integrations import Repo
-from arceus_runner.screening import POLICY_VERSION, ScreenUnavailable, digest, mechanical_notes
-from arceus_runner.workspace_run import WorkspaceRun, clean_text, count, read_instructions
+from arceus_runner.workspace_run import WorkspaceRun, clean_text, count, link_code, read_instructions
 
 FINDINGS = "findings.json"
 RESUME = "The session was interrupted (a reboot or a crash). Continue the review from where you stopped."
@@ -300,31 +297,13 @@ class ArchitectAgent(WorkspaceRun):
     def _cleared_note(self, f) -> tuple[str, str]:
         """A person's reason for their decision on finding f, if the security screen clears it for the agent:
         (note, ""), or ("", why it is left out). People write it in the web console, so it is screened like any text
-        from people; the verdict is kept per text, so the same note is screened once."""
+        from people (WorkspaceRun._cleared)."""
         note = f.decision_note or ""
-        key = digest(note)
-        row = self.store.screening(key)
-        if row is None:
-            gate = getattr(self.d, "gate", None)
-            if gate is None:
-                return "", "no security screen runs here"
-            notes, hold = mechanical_notes(note)
-            message = {"source": "a person's reason for their decision on an architecture finding, written on the "
-                                 "reports page", "author": f.decided_by or "unknown",
-                       "context": f"Architecture finding {f.n}: {f.title}. The next architecture review is told the "
-                                  "decision and this reason.", "notes": notes, "payload": note}
-            try:
-                verdict = gate.classify(message)
-            except (ScreenUnavailable, ValueError):
-                return "", "the security screen did not answer"
-            decision = "review" if hold and verdict.decision == "allow" else verdict.decision
-            row = self.store.save_screening(key, f"arch-finding-{f.n}", "arch_note", decision,
-                                            list(verdict.categories), verdict.reason, verdict.model, POLICY_VERSION,
-                                            self.d.now().isoformat())
-            self.emit("note_screened", finding=f.n, verdict=decision)
-        if row["verdict"] == "allow":
-            return note, ""
-        return "", "the security screen did not clear it"
+        why = self._cleared(note, f"arch-finding-{f.n}", "arch_note", {
+            "source": "a person's reason for their decision on an architecture finding, written on the reports page",
+            "author": f.decided_by or "unknown", "context": f"Architecture finding {f.n}: {f.title}. The next "
+                                                           "architecture review is told the decision and this reason."})
+        return ("", why) if why else (note, "")
 
     @staticmethod
     def _told(f) -> dict:
@@ -442,33 +421,8 @@ class ArchitectAgent(WorkspaceRun):
         told = {t["id"] for t in snap.get("told") or []}
         found, problems = load_findings(self.out_dir(run), told, self.c.max_findings)
         if found.get("findings"):
-            found["findings"] = self._check_refs(snap, found["findings"], problems)
+            found["findings"] = self._check_refs(snap, found["findings"], problems, lambda f: f"“{f['title']}”")
         return found, problems
-
-    def _check_refs(self, snap: dict, findings: list[dict], problems: list[str]) -> list[dict]:
-        """Every reference against the commit the run read: a file that is not there, or a line past its end, goes.
-        A finding with none left goes too."""
-        ws = self.cfg.paths.workspace
-        shas = {r["repo"]: r["sha"] for r in snap.get("repos") or []}
-        kept = []
-        for f in findings:
-            good = []
-            for c in f["where"]:
-                sha = shas.get(c["repo"])
-                try:
-                    lines = self.git.blob_lines(ws / c["repo"], sha, c["file"]) if sha else None
-                except GitError:
-                    lines = None
-                if lines is None or (c["line"] and c["line"] > max(lines, 1)):
-                    where = f"{c['repo']}/{c['file']}" + (f":{c['line']}" if c["line"] else "")
-                    problems.append(f"“{f['title']}”: {where} is not in the code at the commit read")
-                    continue
-                good.append(c)
-            if not good:
-                problems.append(f"“{f['title']}” is left out: none of the code it names exists at the commit read")
-                continue
-            kept.append({**f, "where": good})
-        return kept
 
     def _outcome(self, run: AgentRun, found: dict, problems: list[str], fatal: list[str],
                  stopped: bool) -> tuple[str, list[str]]:
@@ -629,17 +583,7 @@ def run_view(run: AgentRun, host, finished: str | None = None) -> dict:
     """Everything the report shows of a run, links to the code worked out."""
     snap = json.loads(run.snapshot or "{}")
     result = json.loads(run.result or "{}")
-    repos = {r["repo"]: r for r in snap.get("repos") or []}
-    file_url = getattr(host, "file_url", None)
-    for f in result.get("findings") or []:
-        for c in f.get("where") or []:
-            r = repos.get(c["repo"])
-            c["sha"] = r["sha"] if r else ""
-            c["url"] = ""
-            if r and r["sha"] and file_url:
-                c["url"] = file_url(Repo(id=0, path=r["repo"].rsplit("/", 1)[-1], relative_path=r["repo"],
-                                         default_branch=r["default"], archived=False, http_url=r["http_url"]),
-                                    r["sha"], c["file"], c["line"])
+    link_code([c for f in result.get("findings") or [] for c in f.get("where") or []], snap, host)
     return {"n": run.n, "id": run.id, "state": run.state, "source": run.source, "requested_by": run.requested_by,
             "outcome": run.outcome, "reason": run.reason, "created_at": run.created_at,
             "started_at": run.started_at, "finished_at": finished or run.finished_at,

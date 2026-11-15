@@ -30,9 +30,8 @@ from pathlib import Path
 
 from arceus_runner import media, qa_report, qa_scenarios
 from arceus_runner.db import AgentRun, ReviewStore
-from arceus_runner.integrations import Repo
 from arceus_runner.notify import clip_sentences
-from arceus_runner.workspace_run import WorkspaceRun, clean_text, count, read_instructions
+from arceus_runner.workspace_run import WorkspaceRun, clean_text, count, link_code, read_instructions
 
 FINDINGS = "findings.json"
 # The engine's review reads at most this many characters of one report file (review-gate.sh: report-text --max
@@ -492,19 +491,9 @@ class QaAgent(WorkspaceRun):
 
     def view(self, run: AgentRun, finished: str | None) -> dict:
         """Everything the report shows of a run, links to the code worked out."""
-        snap = json.loads(run.snapshot or "{}")
         result = json.loads(run.result or "{}")
-        repos = {r["repo"]: r for r in snap.get("repos") or []}
-        file_url = getattr(self.d.host, "file_url", None)
-        for f in result.get("findings") or []:
-            for c in f.get("code") or []:
-                r = repos.get(c["repo"])
-                c["sha"] = r["sha"] if r else ""
-                c["url"] = ""
-                if r and r["sha"] and file_url:
-                    c["url"] = file_url(Repo(id=0, path=r["repo"].rsplit("/", 1)[-1], relative_path=r["repo"],
-                                             default_branch=r["default"], archived=False, http_url=r["http_url"]),
-                                        r["sha"], c["file"], c["line"])
+        link_code([c for f in result.get("findings") or [] for c in f.get("code") or []],
+                  json.loads(run.snapshot or "{}"), self.d.host)
         return {**super().view(run, finished), "scenario": scenario_name(self.store, run),
                 **{k: result.get(k) for k in ("summary", "blocked", "tested", "findings", "engine_disputed",
                                           "engine_review")}}
