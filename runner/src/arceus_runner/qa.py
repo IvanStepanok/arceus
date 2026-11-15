@@ -405,6 +405,9 @@ class QaAgent(WorkspaceRun):
     NOUN = "the test run"
     RESUME = RESUME
     REPORT_CRITERIA = REPORT_CRITERIA
+    # A part of a long report holds dozens of checks and findings, and each round names only a few objections: a
+    # report of that size needs more rounds than a ticket's short one to settle.
+    REPORT_ROUNDS = 5
     REPORT_FILE = FINDINGS
 
     def __init__(self, delivery):

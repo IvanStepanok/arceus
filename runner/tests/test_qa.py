@@ -313,7 +313,7 @@ def test_a_run_is_sent_with_its_own_review_of_the_report_kept_outside_the_worksp
     queue(w)
     [call] = dispatches(w)
     argv = call["argv"]
-    assert argv[argv.index("--report-max-rounds") + 1] == "3"
+    assert argv[argv.index("--report-max-rounds") + 1] == "5"
     assert argv[argv.index("--report-at-limit") + 1] == "accept"
     criteria = Path(argv[argv.index("--report-criteria") + 1])
     assert criteria.read_text() == REPORT_CRITERIA and "undoing each record is not asked for" in REPORT_CRITERIA
@@ -321,7 +321,7 @@ def test_a_run_is_sent_with_its_own_review_of_the_report_kept_outside_the_worksp
     assert w.cfg.paths.workspace.resolve() not in criteria.resolve().parents
     # The flags come before the folder and the text, which stay the last two arguments.
     assert argv[-2] == str(w.cfg.paths.workspace) and "## The closing review" in argv[-1]
-    assert REPORT_CRITERIA in argv[-1] and "up to 3 rounds" in argv[-1]
+    assert REPORT_CRITERIA in argv[-1] and "up to 5 rounds" in argv[-1]
 
 
 def test_the_engine_review_reads_the_findings_through_a_link_in_artifacts_and_it_goes_with_the_run(w):
