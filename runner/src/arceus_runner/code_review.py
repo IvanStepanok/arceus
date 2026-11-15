@@ -82,7 +82,7 @@ FINAL = ("approved", "attention", "changes")
 # "attention" is an approval that also asks a person to look at named changes; "ready" is one that was refused.
 ORDER = ("changes", "unverified", "ready", "attention", "approved")  # the overall outcome is the first one found
 RESUME = "The session was interrupted (a reboot or a crash). Continue the review from where you stopped."
-# On a server Codex checks the reviewer's closing report claim by claim (the engine's report review, two rounds). When
+# On a server Codex checks the reviewer's closing report claim by claim (the engine's report review, at its own round limit). When
 # it still disputes the report at that limit, the run ends `failed`/`needs-user` and nothing in it can be approved. The
 # reviewer gets the objections back this many times before the review is settled as it stands: a report fixed, or a
 # verdict changed, that Codex then passes counts like any other; one it still disputes is never approved.

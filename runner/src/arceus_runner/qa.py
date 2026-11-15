@@ -30,6 +30,14 @@ from arceus_runner.notify import clip_sentences
 from arceus_runner.workspace_run import WorkspaceRun, clean_text, count
 
 FINDINGS = "findings.json"
+# The engine's review reads at most this many characters of one report file (review-gate.sh: report-text --max
+# 60000) and hands them to Codex inside one prompt, so a report goes to it in parts (findings.json, findings-2.json,
+# ...), each reviewed whole, one attempt of the task each (WorkspaceRun._next_part). The agent keeps each part under
+# PART_BYTES of UTF-8, which is under what is read whatever the language; a part past ENGINE_READS bytes is reported
+# as not reviewed to its end.
+ENGINE_READS = 60_000
+PART_BYTES = 40_000
+MAX_PARTS = 50
 RESUME = "The session was interrupted (a reboot or a crash). Continue testing from where you stopped."
 OUTCOMES = ("passed", "partial", "found", "blocked", "unfinished", "stopped")
 
@@ -38,6 +46,35 @@ MAX_EVIDENCE = 10                 # files per finding
 NAMED = 10                        # what was left out, named one by one before "and N more"
 SEVERITIES = ("critical", "major", "minor")
 RESULTS = ("ok", "problem", "blocked", "skipped")
+
+# What the engine's Codex judges the closing report of a test run by (WorkspaceRun.REPORT_CRITERIA), in place of the
+# server's rule for data changes: a test run on a test stand makes test data by its nature, and asking for the undo of
+# every record it made sent a whole regression back twice and left it waiting for a person. The agent is given the same
+# text, so it writes to it from the start.
+REPORT_CRITERIA = """\
+This is the report of a test run: a tester used the platform on its test stand by the operator's instructions and
+reported what worked and what did not. It changed no code. The report is the tester's findings.json, read as text
+(`tested` is every check with its result, `findings` every problem, `evidence` the screenshots and recordings saved
+beside it). A long report comes in parts, findings.json and then findings-2.json, findings-3.json and so on, and you
+read one part at a time: judge the checks and findings in the part in front of you. The summary and the totals in
+findings.json (`parts`, `checks`, `findings_count`) are about the whole report; the runner checks the totals against
+all the parts. Judge the report by these points, and only these:
+
+1. Every finding says where it happens (a URL or screen), gives steps from a state anyone can reach, names the step
+   where it goes wrong, sets expected against actual, and says how many attempts reproduced it. A finding whose
+   steps or evidence do not support what it claims is grounds for FAIL.
+2. A finding names the screenshot or recording that shows it, at the step it proves; one without any says why.
+3. The summary and the conclusions claim no more than the checks show: nothing is called working that was not
+   checked, and a check that could not be done or was skipped is listed as such, never as passed.
+4. The numbers agree: what the summary counts matches the checks and findings listed.
+5. A suspected cause in the code is put as a suspicion with its file and line. A finding with no cause found is
+   not grounds for FAIL.
+6. Test data the run made on the test stand (accounts, orders, uploads) is expected. Naming what was made is
+   enough; undoing each record is not asked for. A change outside the test stand, or anything the instructions
+   forbid (a real payment, a message to a real person, deleting data that was there before), is grounds for FAIL.
+
+Do not fail the report for its style, for checks the instructions did not ask for, or for evidence the tester could
+not get and said so."""
 
 SCHEMA_EXAMPLE = """\
 {"summary": "Checked sign-in, the catalogue, the cart and checkout as a customer and as an admin. Checkout fails
@@ -93,23 +130,71 @@ def load_findings(folder: Path, dest: Path, limits: Limits = Limits()) -> tuple[
         return {}, [f"the findings file could not be read ({type(e).__name__})"]
 
 
+def part_name(k: int) -> str:
+    """The agent's report file of part k: findings.json, then findings-2.json, findings-3.json, ..."""
+    return FINDINGS if k == 1 else f"{Path(FINDINGS).stem}-{k}{Path(FINDINGS).suffix}"
+
+
+def report_parts(folder: Path) -> list[str]:
+    """The parts of the report the agent wrote, in order: findings.json and the numbered ones that follow it without
+    a gap, at most MAX_PARTS."""
+    names = []
+    for k in range(1, MAX_PARTS + 1):
+        path = folder / part_name(k)
+        if not path.is_file() or path.is_symlink():
+            break
+        names.append(part_name(k))
+    return names
+
+
 def _load_findings(folder: Path, dest: Path, limits: Limits) -> tuple[dict, list[str]]:
     path = folder / FINDINGS
     if folder.is_symlink() or not path.is_file() or path.is_symlink():
         return {}, ["the agent wrote no findings file"]
-    size = path.stat().st_size
+    names = report_parts(folder)
+    size = sum((folder / n).stat().st_size for n in names)
     if size > limits.report_bytes:
         return {}, [f"the findings file is {size // 1024} KB, more than the {limits.report_bytes // 1024} KB a run "
                     "keeps (qa.max_report_mb), so none of it is shown"]
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        return {}, [f"the findings file is not JSON ({type(e).__name__})"]
-    if not isinstance(data, dict):
-        return {}, ["the findings file is not a JSON object"]
     problems: list[str] = []
+    parts = []
+    for name in names:
+        try:
+            text = (folder / name).read_text(encoding="utf-8")
+            part = json.loads(text)
+        except (OSError, ValueError) as e:
+            if name == FINDINGS:
+                return {}, [f"the findings file is not JSON ({type(e).__name__})"]
+            problems.append(f"{name} is not JSON ({type(e).__name__}), so what it holds is not shown")
+            continue
+        if not isinstance(part, dict):
+            if name == FINDINGS:
+                return {}, ["the findings file is not a JSON object"]
+            problems.append(f"{name} is not a JSON object, so what it holds is not shown")
+            continue
+        size = len(text.encode("utf-8"))
+        if size > ENGINE_READS:
+            problems.append(f"{name} is {size} bytes, more than the {ENGINE_READS} the closing review reads of one "
+                            "part, so its end was not reviewed")
+        parts.append(part)
+    stray = sorted(f.name for f in folder.glob(f"{Path(FINDINGS).stem}-*{Path(FINDINGS).suffix}")
+                   if f.name not in names)
+    if stray:
+        problems.append(f"the report's parts are not numbered without a gap after {names[-1]}, so these are not "
+                        f"shown: {_left_out(stray)}")
+    data = parts[0]
+    raw_tested = [t for p in parts for t in (p.get("tested") if isinstance(p.get("tested"), list) else [])]
+    raw_findings = [f for p in parts for f in (p.get("findings") if isinstance(p.get("findings"), list) else [])]
+    if len(names) > 1 or data.get("parts") is not None:
+        # The first part is reviewed alone, so what it says of the whole is checked here.
+        declared = {k: count(data.get(k)) for k in ("parts", "checks", "findings_count")}
+        actual = {"parts": len(names), "checks": len(raw_tested), "findings_count": len(raw_findings)}
+        for key, label in (("parts", "parts"), ("checks", "checks"), ("findings_count", "findings")):
+            if declared[key] != actual[key]:
+                said = f"says {declared[key]}" if declared[key] is not None else "does not say how many"
+                problems.append(f"{FINDINGS} {said} {label}, the report has {actual[key]}")
     tested = []
-    for t in data.get("tested") if isinstance(data.get("tested"), list) else []:
+    for t in raw_tested:
         what = clean_text(t.get("what"), 300) if isinstance(t, dict) else ""
         if not what:
             problems.append("an entry of `tested` has no readable `what`")
@@ -123,8 +208,8 @@ def _load_findings(folder: Path, dest: Path, limits: Limits) -> tuple[dict, list
         tested = tested[:limits.checks]
     evidence = _Evidence(folder, dest, limits)
     findings = []
-    raw = data.get("findings") if isinstance(data.get("findings"), list) else []
-    if data.get("findings") is not None and not isinstance(data.get("findings"), list):
+    raw = raw_findings
+    if any(p.get("findings") is not None and not isinstance(p.get("findings"), list) for p in parts):
         problems.append("`findings` is not a list, so what the agent found there is not known")
     for i, f in enumerate(raw[:limits.findings], 1):
         title = clean_text(f.get("title"), 200) if isinstance(f, dict) else ""
@@ -231,11 +316,20 @@ def outcome_of(found: dict, problems: list[str], fatal: list[str], stopped: bool
     "passed" only for a run that finished, found nothing, read whole, and checked at least one thing that worked
     with nothing it could not check or skipped; a run that checked some and could not check or skipped others is
     "partial". What could not be checked, what was skipped, a check marked as a problem with no finding to say what,
-    or a report the runner could not read whole is never "No problems found"."""
+    or a report the runner could not read whole is never "No problems found", and neither is a report that did not
+    pass its closing review (`engine_disputed`: what it found is kept, the objections are shown beside it). A disputed
+    report that names no check that was done, or that could not be read whole, did not finish, findings or not."""
     if stopped:
         return "stopped", []
     if fatal:
         return "unfinished", []
+    if found.get("engine_disputed") and not (found.get("blocked") and not found.get("findings")):
+        # The engine ended it as finished only because the closing review objected; the report itself has to show
+        # that testing took place. Its findings are kept either way.
+        if not any(t["result"] in ("ok", "problem") for t in found.get("tested") or []):
+            return "unfinished", ["the report did not pass its closing review, and it names no check that was done"]
+        if problems:
+            return "unfinished", ["the report did not pass its closing review, and part of it could not be read"]
     if found.get("findings"):
         return "found", []
     if found.get("blocked"):
@@ -253,6 +347,9 @@ def outcome_of(found: dict, problems: list[str], fatal: list[str], stopped: bool
         return "unfinished", ["every check was skipped: nothing was tested"]
     if "blocked" in results or "skipped" in results:
         return "partial", []
+    if found.get("engine_disputed"):
+        return "partial", ["the report as a whole did not pass its closing review, so finding nothing is not a "
+                           "clean result: see the objections"]
     return "passed", []
 
 
@@ -261,9 +358,17 @@ class QaAgent(WorkspaceRun):
     TITLE = "Platform testing"
     NOUN = "the test run"
     RESUME = RESUME
+    REPORT_CRITERIA = REPORT_CRITERIA
+    REPORT_FILE = FINDINGS
 
     def __init__(self, delivery):
         super().__init__(delivery, delivery.cfg.qa)
+
+    def _part_file(self, k: int) -> str:
+        return part_name(k)
+
+    def _parts(self, run: AgentRun) -> list[str]:
+        return report_parts(self.out_dir(run)) or [FINDINGS]
 
     def _empty(self) -> dict:
         return {"summary": "", "blocked": "", "tested": [], "findings": []}
@@ -291,7 +396,8 @@ class QaAgent(WorkspaceRun):
                                              default_branch=r["default"], archived=False, http_url=r["http_url"]),
                                         r["sha"], c["file"], c["line"])
         return {**super().view(run, finished),
-                **{k: result.get(k) for k in ("summary", "blocked", "tested", "findings")}}
+                **{k: result.get(k) for k in ("summary", "blocked", "tested", "findings", "engine_disputed",
+                                          "engine_review")}}
 
     def _render(self, view: dict) -> str:
         return qa_report.render_run(view, self.cfg.project, self.cfg.schedule.tz)
@@ -306,6 +412,7 @@ class QaAgent(WorkspaceRun):
         the same text, so a repeat is the same message for the engine."""
         ws = self.cfg.paths.workspace.resolve()
         out = self.out_dir(run)
+        review = self.review_link(run).relative_to(ws).as_posix()
         lines = [f"Test run {run.n} of the platform: test it the way the instructions below ask, and report what you "
                  "found.", "",
                  "You are the tester. You use the platform as a person would, in the browser (the `browser` MCP "
@@ -368,9 +475,25 @@ class QaAgent(WorkspaceRun):
                   "In every text, put file paths, lines, names from the code and commits in backticks "
                   "(`app/urls.py:12`, `get_cart()`): the report shows them as code.", "",
                   "Write the report's texts in the language the instructions below are written in. The runner reads "
-                  "the file, builds the report and tells the team; you cannot post anywhere yourself. Then finish "
-                  "with the outcome succeeded_research and the same summary. Never end with needs_input or blocked: "
-                  "a run that could not test says so in `blocked` and finishes.", "",
+                  "the file, builds the report and tells the team; you cannot post anywhere yourself. Write it as "
+                  f"compact JSON, without indentation, and keep it under {PART_BYTES // 1000} KB: a longer report "
+                  f"goes on in `{part_name(2)}`, `{part_name(3)}` and so on, each under {PART_BYTES // 1000} KB, "
+                  "with more entries of `tested` and `findings` (the findings first, then the checks), and then "
+                  f"`{FINDINGS}` also says how many parts there are and how many checks and findings they hold in all: "
+                  "`\"parts\"`, `\"checks\"`, `\"findings_count\"`. The summary and `blocked` are only in "
+                  f"`{FINDINGS}`. Then finish with the outcome succeeded_research, its summary "
+                  f"starting with `{review}` and then the same summary, and in your last message name the test data "
+                  "you made on the platform (accounts, records, uploads). Never end with needs_input or blocked: a "
+                  "run that could not test says so in `blocked` and finishes.", "",
+                  "## The closing review", "",
+                  f"Before the run ends, a reviewer reads your report and may send it back with objections, up to "
+                  f"{self.REPORT_ROUNDS} rounds; answer each objection by correcting `{FINDINGS}` and finish again "
+                  "the same way. After the last round the report goes out with any objections still open shown "
+                  f"beside it. The reviewer reads `{FINDINGS}` as `{review}`, a link the runner made to it: do not "
+                  "write that file, and put no other report in `artifacts/`, nor anywhere but your folder. A report "
+                  "in parts is reviewed one part at a time, the same way: once a part is done the runner asks you to "
+                  "finish again naming the next one, and a part changed after its review counts as not reviewed. It "
+                  "judges by this:", "", REPORT_CRITERIA, "",
                   "## The instructions", "", instructions.strip()]
         return "\n".join(lines)
 
@@ -385,6 +508,7 @@ def index_rows(store: ReviewStore, reports: Path) -> list[dict]:
                      "started_at": run.started_at, "finished_at": run.finished_at,
                      "stop_requested": bool(run.stop_requested),
                      "findings": len(result.get("findings") or []),
+                     "disputed": bool(result.get("engine_disputed")),
                      "summary": clip_sentences(result.get("summary") or "", 300),
                      "has_report": run.state == "done" and (reports / str(run.n) / "report.html").is_file()})
     return rows

@@ -76,6 +76,8 @@ QA_HEADS = {"passed": "✅ Platform test found no problems",
             "found": "🐞 Platform test found {n} problem{s}",
             "blocked": "⛔️ Platform test could not test", "unfinished": "⚠️ Platform test did not finish",
             "stopped": "⏹ Platform test stopped"}
+# A test run that found nothing, but whose report did not pass its closing review (qa.outcome_of: partial).
+QA_DISPUTED_PARTIAL = "☑️ Platform test found no problems, but its report did not pass its closing review"
 # A finished architecture review (architect.py).
 ARCH_HEADS = {"clean": "✅ Architecture review found nothing to raise",
               "partial": "☑️ Architecture review found nothing to raise in what it read, but did not read everything",
@@ -577,12 +579,17 @@ class Notifier:
         if run is None:
             return
         n = int(r.get("findings") or 0)
-        head = QA_HEADS.get(run.outcome or "", "🧪 Platform test finished").format(n=n, s="s" if n != 1 else "")
         result = json.loads(run.result or "{}")
+        disputed = bool(result.get("engine_disputed"))
+        head = (QA_DISPUTED_PARTIAL if run.outcome == "partial" and disputed else
+                QA_HEADS.get(run.outcome or "", "🧪 Platform test finished").format(n=n, s="s" if n != 1 else ""))
         lines = [f"{head}: run {run.n}."]
         said = (result.get("blocked") if run.outcome == "blocked" else "") or result.get("summary")
         if said:
             lines.append(esc(summary_text(said, 600)))
+        if disputed:
+            lines.append("⚠️ The report as a whole did not pass its closing review: the objections left unsettled "
+                         "are in the report. Read it with them in mind.")
         if run.reason and run.outcome not in ("found", "passed", "partial"):
             # Why this is not a clean result, in the runner's words: the agent's summary may sound like one.
             lines.append(f"Why: {esc(clip(run.reason, 300))}")

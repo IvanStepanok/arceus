@@ -117,6 +117,7 @@ def queue(w: World, by: str = "ops") -> None:
 
 def brief(w: World, rid: str = RID) -> str:
     [call] = [c for c in w.calls("dispatch") if c["argv"][c["argv"].index("--task-id") + 1] == rid]
+    assert not any(a.startswith("--report") for a in call["argv"])   # only test runs bring their own review
     return call["argv"][-1]
 
 

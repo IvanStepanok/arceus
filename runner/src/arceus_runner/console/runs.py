@@ -28,7 +28,9 @@ def dress(rows: list[dict], head_of) -> list[dict]:
     """The list's rows with their words: under way, the step; done, the result as the reports word it."""
     for r in rows:
         r["state_text"] = STATE_TEXT.get(r["state"], r["state"])
-        r["result_text"] = head_of(r.get("outcome"), r.get("findings") or 0) if r["state"] == "done" else ""
+        # Only the kinds whose rows say so tell head_of the report was disputed (qa.index_rows).
+        extra = {"disputed": True} if r.get("disputed") else {}
+        r["result_text"] = head_of(r.get("outcome"), r.get("findings") or 0, **extra) if r["state"] == "done" else ""
         r["result_class"] = RESULT_CLASS.get(r.get("outcome") or "", "")
     return sorted(rows, key=lambda r: r["n"], reverse=True)
 

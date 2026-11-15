@@ -71,6 +71,7 @@ h3 { font-size: 1.05rem; line-height: 1.35; margin: 0; }
 .alert { margin: 16px 0 0; padding: 12px 16px; border-radius: 8px; background: var(--bad-soft); }
 .alert.note { background: var(--warn-soft); }
 .alert p { margin: 0; } .alert ul { margin: 6px 0 0; padding-left: 20px; }
+.alert .objections { margin: 8px 0 0; white-space: pre-line; }
 .checks { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--line);
           border-radius: 8px; }
 .checks li { display: grid; grid-template-columns: 9.5rem 1fr; gap: 12px; padding: 10px 16px;
@@ -158,7 +159,14 @@ def _took(start: str | None, end: str | None) -> str:
     return f"{minutes} min" if minutes < 60 else f"{minutes // 60} h {minutes % 60:02d} min"
 
 
-def head_of(outcome: str | None, findings: int) -> str:
+DISPUTED_PARTIAL = "No problems found, but the report did not pass its closing review"
+
+
+def head_of(outcome: str | None, findings: int, disputed: bool = False) -> str:
+    """The result in a few words. `disputed`: the report did not pass its closing review (qa.outcome_of makes such a
+    run that found nothing partial, though it may have checked everything)."""
+    if outcome == "partial" and disputed:
+        return DISPUTED_PARTIAL
     if outcome == "found":
         return f"{findings} problem{'s' if findings != 1 else ''} found"
     return HEADS.get(outcome or "", None) or "In progress"
@@ -239,6 +247,7 @@ def run_body(view: dict, project: str, tz: ZoneInfo) -> tuple[str, str]:
     cause. The web console shows the body inside its own page."""
     findings = view.get("findings") or []
     outcome = view.get("outcome")
+    disputed = bool(view.get("engine_disputed"))
     # Who typed the command on the server is the runner's own user: only the schedule says something.
     by = ", on schedule" if view.get("source") == "schedule" else ""
     facts = [("Started", f"{_when(view.get('started_at') or view.get('created_at'), tz)}{by}"),
@@ -249,7 +258,7 @@ def run_body(view: dict, project: str, tz: ZoneInfo) -> tuple[str, str]:
         facts.append(("Instructions", f"{ins.get('path')}, version {str(ins.get('sha256'))[:12]}"))
     body = [f'<p class="crumb"><a href="../">All runs of {e(project)}</a></p>',
             f"<h1>Platform test, run {e(view['n'])}</h1>",
-            f'<p class="verdict {e(outcome)}">{e(head_of(outcome, len(findings)))}</p>',
+            f'<p class="verdict {e(outcome)}">{e(head_of(outcome, len(findings), disputed))}</p>',
             '<dl class="facts">' + "".join(f"<dt>{e(k)}</dt><dd>{e(v)}</dd>" for k, v in facts if v) + "</dl>"]
     if view.get("summary"):
         body.append(f'<p class="summary">{rich(view["summary"])}</p>')
@@ -260,6 +269,12 @@ def run_body(view: dict, project: str, tz: ZoneInfo) -> tuple[str, str]:
         body.append('<div class="alert"><p><strong>The run did not finish as it should.</strong> What is below is '
                     'what it reported before that.</p><ul>' + "".join(f"<li>{e(x)}</li>" for x in fatal)
                     + "</ul></div>")
+    if view.get("engine_disputed") or view.get("engine_review"):
+        objections = (f'<p class="objections">{rich(view["engine_review"])}</p>' if view.get("engine_review")
+                      else '<p class="objections">The review did not say what it objected to.</p>')
+        body.append('<div class="alert note"><p><strong>The tester\'s report as a whole did not pass its closing '
+                    "review.</strong> Everything it reported is below. These objections to the report were not "
+                    "settled, so read it with them in mind:</p>" + objections + "</div>")
     doubts = view.get("doubts") or []
     if doubts:
         body.append('<div class="alert note"><p><strong>Not a clean result:</strong></p><ul>'
@@ -293,7 +308,7 @@ def run_body(view: dict, project: str, tz: ZoneInfo) -> tuple[str, str]:
                 lines.append(f"<li><code>{e(r['repo'])}</code> {e(r['default'])} at <code>{e(r['sha'][:12])}</code>"
                              f"{note}</li>")
         body.append("<footer><p>Code the agent read to explain problems:</p><ul>" + "".join(lines) + "</ul></footer>")
-    return f"Run {view['n']}: {head_of(outcome, len(findings))}", "\n".join(body)
+    return f"Run {view['n']}: {head_of(outcome, len(findings), disputed)}", "\n".join(body)
 
 
 def render_index(rows: list[dict], project: str, tz: ZoneInfo) -> str:
@@ -309,7 +324,7 @@ def render_index(rows: list[dict], project: str, tz: ZoneInfo) -> str:
                 else "Writing the report"
             result += ", stop asked" if r.get("stop_requested") else ""
         else:
-            result = head_of(r["outcome"], r["findings"])
+            result = head_of(r["outcome"], r["findings"], bool(r.get("disputed")))
         run = f'<a href="{e(r["n"])}/">Run {e(r["n"])}</a>' if r.get("has_report") else f"Run {e(r['n'])}"
         summary = f'<span class="run-summary">{rich(r["summary"])}</span>' if r.get("summary") else ""
         by = "Schedule" if r["source"] == "schedule" else "Command"

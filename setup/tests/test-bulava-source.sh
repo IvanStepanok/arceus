@@ -55,6 +55,9 @@ if [ "${1:-}" = --live ]; then
     'bulava_mirror_fetch "$T/live.git" "$src" "$ref" && bulava_mirror_checkout "$T/live.git" "$ref" "$T/live" \
      && [ -x "$T/live/engine/bin/dispatch.sh" ] && [ -f "$T/live/engine/hooks/review-gate.sh" ] \
      && [ ! -e "$T/live/engine/bin/lib/claude-checks.sh" ] && ! grep -q claude_checks_enabled "$T/live/engine/hooks/review-gate.sh"'
+  # 1.20 and later: a task's own review budget, which test runs are sent with (runner/src/arceus_runner/qa.py).
+  check "that commit takes a task's own review of its report" \
+    'grep -q -- "--report-criteria)" "$T/live/engine/bin/dispatch.sh" && grep -q -- "--report-at-limit)" "$T/live/engine/bin/dispatch.sh"'
 fi
 
 [ "$fails" = 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

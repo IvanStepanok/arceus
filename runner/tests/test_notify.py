@@ -453,6 +453,38 @@ def test_a_test_run_of_the_platform_is_told_when_it_starts_and_ends_with_its_sum
     assert "Why: every check was skipped: nothing was tested" in told and "no problems" not in told
 
 
+def test_a_test_run_whose_report_did_not_pass_its_closing_review_is_told_so(b):
+    # With findings: the usual result, and the warning the report page shows.
+    run = b.store.add_run("qa", "command", "ops")
+    b.store.update_run(run.id, state="done", outcome="found", result=json.dumps(
+        {"summary": "Checked sign-in. The reset link is dead.", "findings": [{}],
+         "engine_disputed": True, "engine_review": "1. The ledger is incomplete."}))
+    b.events.emit("qa_published", task_id=run.id, run=run.n, outcome="found", findings=1, url="u")
+    [told] = b.flush()
+    assert told.startswith("🐞 Platform test found 1 problem: run 1.")
+    assert "did not pass its closing review" in told and "Codex" not in told
+    # Without findings: never "could not check everything" when the dispute is the reason.
+    again = b.store.add_run("qa", "command", "ops")
+    b.store.update_run(again.id, state="done", outcome="partial",
+                       reason="the report as a whole did not pass its closing review, so finding nothing is not a "
+                              "clean result: see the objections",
+                       result=json.dumps({"summary": "All good.", "findings": [], "engine_disputed": True,
+                                          "engine_review": ""}))
+    b.events.emit("qa_published", task_id=again.id, run=again.n, outcome="partial", findings=0, url="u")
+    [told] = b.flush()
+    assert told.startswith("☑️ Platform test found no problems, but its report did not pass its closing review: run 2.")
+    assert "could not check everything" not in told and "did not pass its closing review: the objections" in told
+    # Disputed and showing no testing: unfinished, with the runner's reason.
+    third = b.store.add_run("qa", "command", "ops")
+    b.store.update_run(third.id, state="done", outcome="unfinished",
+                       reason="the report did not pass its closing review, and it names no check that was done",
+                       result=json.dumps({"summary": "Found one.", "findings": [{}], "engine_disputed": True}))
+    b.events.emit("qa_published", task_id=third.id, run=third.n, outcome="unfinished", findings=1, url="u")
+    [told] = b.flush()
+    assert told.startswith("⚠️ Platform test did not finish: run 3.")
+    assert "Why: the report did not pass its closing review, and it names no check that was done" in told
+
+
 
 def test_an_architecture_review_is_told_with_what_is_new_fixed_and_what_codex_thinks(b):
     run = b.store.add_run("arch", "schedule", "schedule", slot="2026-10-25T03:00:00+02:00")

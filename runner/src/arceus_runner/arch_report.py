@@ -284,10 +284,12 @@ def run_body(view: dict, ledger: dict[int, dict], project: str, tz: ZoneInfo, fo
         body.append('<div class="alert"><p><strong>The run did not finish as it should.</strong> What is below is '
                     'what it reported before that; its findings are not kept for the next review.</p><ul>'
                     + "".join(f"<li>{e(x)}</li>" for x in fatal) + "</ul></div>")
-    if view.get("engine_review"):
+    if view.get("engine_disputed") or view.get("engine_review"):
+        objections = (f'<p class="objections">{rich(view["engine_review"])}</p>' if view.get("engine_review")
+                      else '<p class="objections">The review did not say what it objected to.</p>')
         body.append('<div class="alert note"><p><strong>The agent\'s report as a whole did not pass review.</strong> '
                     "The objections it did not settle are below; each finding has its own second check:</p>"
-                    f'<p class="objections">{rich(view["engine_review"])}</p></div>')
+                    + objections + "</div>")
     doubts = view.get("doubts") or []
     if doubts:
         body.append('<div class="alert note"><p><strong>Not a clean result:</strong></p><ul>'

@@ -33,7 +33,7 @@ from pathlib import Path
 from arceus_runner.code_review import ReviewAgent
 from arceus_runner.db import RUN_UNDER_WAY, AgentRun, ReviewStore, Task
 from arceus_runner.delivery import ProjectNotesError, project_notes
-from arceus_runner.engine import EngineError
+from arceus_runner.engine import EngineError, ReportReview
 from arceus_runner.gitops import HOME_BRANCH, GitError
 from arceus_runner.http import ServiceError
 from arceus_runner.replies import unattributed
@@ -91,6 +91,15 @@ class WorkspaceRun:
     TITLE = ""       # "Platform testing, run 3"
     NOUN = ""        # "the test run qa-3"
     RESUME = ""      # what the agent is told when its session was interrupted
+    # What the engine's Codex judges the agent's closing report by, in place of the server's rule about data changes,
+    # and how many rounds it gets; at the limit the report is accepted with the reviewer's notes (`_disputed`).
+    # None: the engine's own review of a report, as for a ticket.
+    REPORT_CRITERIA: str | None = None
+    REPORT_ROUNDS = 3
+    REPORT_FILE = ""  # the agent's report in out_dir, which that review reads (review_link), part by part (_parts)
+    PART_REVIEW = ("The reviewer has finished with {done}. Your report has more parts: it now reads {name}, as "
+                   "`{link}`. Change nothing unless its objections ask for it, and then correct {name}. Finish again "
+                   "with the outcome succeeded_research, its summary starting with `{link}`.")
 
     def __init__(self, delivery, settings):
         self.d = delivery
@@ -267,7 +276,8 @@ class WorkspaceRun:
         self.out_dir(run).mkdir(parents=True, exist_ok=True)
         reply = self.d.engine.dispatch(task_id=run.id, message_id=f"{self.KIND}-{run.id}", author=run.requested_by,
                                        source="other", branch=branch, base=HOME_BRANCH, repo=Path(ws),
-                                       text=snap["text"], clearance=trusted(snap["text"]), extra_dirs=extra)
+                                       text=snap["text"], clearance=trusted(snap["text"]), extra_dirs=extra,
+                                       report_review=self._report_review(run))
         if reply.accepted:
             self.store.update_run(run.id, state="running", started_at=self.d.now().isoformat())
             self.emit("dispatched", task_id=run.id, run=run.n, source=run.source, by=run.requested_by,
@@ -276,6 +286,50 @@ class WorkspaceRun:
             self.emit("busy", task_id=run.id, run=run.n, reason=reply.why())
         else:
             self._settled(run, None, f"the execution engine did not accept the run ({reply.why()})")
+
+    def _report_review(self, run: AgentRun) -> ReportReview | None:
+        """The kind's review budget for the engine (REPORT_CRITERIA). The criteria go to a file beside the extra
+        directories, outside the workspace (a file in it would make the tree dirty); the engine copies it when it
+        accepts the task, and a later attempt is reviewed by that copy."""
+        if not self.REPORT_CRITERIA:
+            return None
+        path = self._extra_dirs(run).parent / "report-criteria.md"
+        write_atomic(path, self.REPORT_CRITERIA)
+        self._link_report(run)
+        return ReportReview(rounds=self.REPORT_ROUNDS, criteria=path)
+
+    def review_link(self, run: AgentRun, k: int = 1) -> Path:
+        """The name under which the engine's review reads part k of the agent's report. It reads a report the worker
+        names in its summary, or else the newest one, in `artifacts/` of the folder the session starts in, and only
+        as html, md or txt (engine/bin/pipeline-tool.py find_report, report_text); the agent's report is JSON in its
+        own folder. A link there, to that file, makes every round read the part as it is then."""
+        return self.cfg.paths.workspace.resolve() / "artifacts" / run.id / (Path(self._part_file(k)).stem + ".txt")
+
+    def _part_file(self, k: int) -> str:
+        """The agent's file of part k of its report. One part unless the kind says otherwise."""
+        return self.REPORT_FILE
+
+    def _parts(self, run: AgentRun) -> list[str]:
+        """The parts of the report the agent wrote, in order; the engine's review reads one per attempt."""
+        return [self.REPORT_FILE] if self.REPORT_FILE else []
+
+    def _link_report(self, run: AgentRun, k: int = 1) -> None:
+        """Make review_link of part k, relative so that it holds wherever the workspace is. Safe to repeat. Never
+        through an `artifacts` that is itself a link: whatever it points at is not the workspace's to write in."""
+        link = self.review_link(run, k)
+        ws = self.cfg.paths.workspace.resolve()
+        art = ws / "artifacts"
+        if art.is_symlink() or (art / run.id).is_symlink():
+            self.emit("review_link_skipped", task_id=run.id, run=run.n, reason=f"{art} is a link")
+            return
+        link.parent.mkdir(parents=True, exist_ok=True)
+        target = os.path.relpath(self.out_dir(run) / self._part_file(k), link.parent)
+        if link.is_symlink() and os.readlink(link) == target:
+            return
+        tmp = link.with_name(f".{link.name}.tmp")
+        tmp.unlink(missing_ok=True)
+        tmp.symlink_to(target)
+        os.replace(tmp, link)
 
     def _overdue(self, run: AgentRun) -> bool:
         started = datetime.fromisoformat(run.started_at) if run.started_at else self.d.now()
@@ -310,6 +364,8 @@ class WorkspaceRun:
         if show is None:
             self._settled(run, None, "the execution engine lost track of the run")
             return
+        if self._review_pending(run):
+            return
         state = show.get("state")
         if state in ("queued", "running"):
             if run.stop_requested:
@@ -323,17 +379,136 @@ class WorkspaceRun:
                     self._settled(run, show, f"the run did not finish in {hours:g} h and was stopped")
                 return
             attempt = len(show.get("attempts") or [])
+            text = self._resume_text(run)
             reply = self.d.engine.send(task_id=run.id, message_id=f"resume-{run.id}-{attempt}", source="other",
-                                       author=run.requested_by, repo=Path(self.cfg.paths.workspace), text=self.RESUME,
-                                       clearance=trusted(self.RESUME), extra_dirs=self._extra_dirs(run))
+                                       author=run.requested_by, repo=Path(self.cfg.paths.workspace), text=text,
+                                       clearance=trusted(text), extra_dirs=self._extra_dirs(run))
             if not reply.accepted and reply.rc != 6:
                 self._settled(run, show, f"the execution engine did not take the run up again ({reply.why()})")
             return
+        if self._next_part(run, show):
+            return
         self._settled(run, show)
+
+    # -- the closing review, part by part -----------------------------------------------------------
+    #
+    # The engine's review reads one file of the report per attempt, and only so much of it. A report in several parts
+    # is reviewed one part per attempt: when an attempt ends `done` (its part passed, or was let through with notes)
+    # and parts are left, the runner links the next one and asks the agent to finish again naming it
+    # (`worker-send --relation continue`, which the engine reviews by the task's stored budget). The run's snapshot
+    # keeps where this stands under "review": the part under review, whether the message for it was sent, the parts
+    # as they were when the first was reviewed, a digest of each part as its review saw it, and the objections left
+    # on the parts done. The message is counted before it is sent and marked sent after; the engine takes a message
+    # id once, so a runner that restarts in between sends it again and nothing more.
+
+    def _review_state(self, run: AgentRun) -> dict:
+        return json.loads(run.snapshot or "{}").get("review") or {}
+
+    def _set_review_state(self, run: AgentRun, review: dict) -> AgentRun:
+        snap = json.loads(run.snapshot or "{}")
+        return self.store.update_run(run.id, snapshot=json.dumps({**snap, "review": review}))
+
+    def _digest(self, run: AgentRun, name: str) -> str:
+        try:
+            return hashlib.sha256((self.out_dir(run) / name).read_bytes()).hexdigest()
+        except OSError:
+            return ""
+
+    def _resume_text(self, run: AgentRun) -> str:
+        k = self._review_state(run).get("part", 1)
+        if k == 1:
+            return self.RESUME
+        link = self.review_link(run, k).relative_to(self.cfg.paths.workspace.resolve()).as_posix()
+        return f"{self.RESUME} The reviewer is reading {self._part_file(k)}: finish with your summary starting with `{link}`."
+
+    def _next_part(self, run: AgentRun, show: dict) -> bool:
+        """After an attempt whose review settled its part: on to the next part, if there is one and time is left.
+        True while that is under way."""
+        if not self.REPORT_FILE or run.stop_requested or show.get("state") != "done" or self._overdue(run):
+            return False
+        rv = self._review_state(run)
+        if rv.get("refused"):
+            return False
+        k = rv.get("part", 1)
+        parts = rv.get("parts") or self._parts(run)
+        if k >= len(parts):
+            return False
+        name = parts[k - 1]
+        notes = list(rv.get("notes") or [])
+        mine = self._engine_notes(show)
+        if mine:
+            notes.append({"part": name, "text": mine["engine_review"]})
+        rv = {"part": k + 1, "sent": False, "parts": parts, "notes": notes,
+              "digests": {**(rv.get("digests") or {}), name: self._digest(run, name)}}
+        self._send_part(self._set_review_state(run, rv))
+        return True
+
+    def _review_pending(self, run: AgentRun) -> bool:
+        """A part's message counted but not known to be sent: send it again (the engine takes it once)."""
+        rv = self._review_state(run)
+        if not rv or rv.get("sent", True):
+            return False
+        if self._overdue(run) or run.stop_requested:
+            self._set_review_state(run, {**rv, "sent": True, "refused": "the run's time ran out" if not run.stop_requested
+                                   else "the run was stopped"})
+            return False
+        self._send_part(run)
+        return True
+
+    def _send_part(self, run: AgentRun) -> None:
+        rv = self._review_state(run)
+        k = rv["part"]
+        ws = self.cfg.paths.workspace.resolve()
+        self._link_report(run, k)
+        done = ", ".join(rv["parts"][:k - 1])
+        text = self.PART_REVIEW.format(done=done, name=self._part_file(k),
+                                       link=self.review_link(run, k).relative_to(ws).as_posix())
+        reply = self.d.engine.send(task_id=run.id, message_id=f"review-{run.id}-{k}", source="other",
+                                   author=run.requested_by, repo=Path(self.cfg.paths.workspace), text=text,
+                                   clearance=trusted(text), extra_dirs=self._extra_dirs(run))
+        if reply.accepted:
+            self._set_review_state(run, {**rv, "sent": True})
+            self.emit("review_part", task_id=run.id, run=run.n, part=self._part_file(k), of=len(rv["parts"]))
+        elif reply.rc != 6:
+            self._set_review_state(run, {**rv, "sent": True, "refused": f"the engine did not take it ({reply.why()})"})
+            self.emit("review_part_refused", task_id=run.id, run=run.n, part=self._part_file(k), reason=reply.why())
+
+    def _review_notes(self, run: AgentRun, show: dict | None, problem: str | None) -> dict:
+        """What the closing review left on the report as a whole: the objections on every part, and the parts it never
+        read or that changed after it did. A report in one part keeps the engine's words as they are."""
+        if not self.REPORT_FILE:
+            return self._engine_notes(show) if show and not problem else {}
+        rv = self._review_state(run)
+        k = rv.get("part", 1)
+        now = self._parts(run)
+        parts = rv.get("parts") or now
+        notes = list(rv.get("notes") or [])
+        mine = self._engine_notes(show) if show and not problem else {}
+        if mine:
+            notes.append({"part": parts[k - 1] if k <= len(parts) else self._part_file(k), "text": mine["engine_review"]})
+        if len(parts) <= 1 and len(now) <= 1:
+            return mine
+        # The part under review counts as read only when its attempt ended as a review ends.
+        last_read = show is not None and not problem and not rv.get("refused") and rv.get("sent", True) and (
+            show.get("state") == "done" or bool(mine))
+        read = parts[:k] if last_read else parts[:k - 1]
+        gaps = [f"{n} was not reviewed before the run ended" for n in [*parts, *[n for n in now if n not in parts]]
+                if n not in read]
+        if gaps and rv.get("refused"):
+            gaps[0] += f" ({rv['refused']})"
+        digests = rv.get("digests") or {}
+        gaps += [f"{n} changed after its review" for n in read if n in digests and self._digest(run, n) != digests[n]]
+        if not notes and not gaps:
+            return {}
+        text = "\n\n".join([*(f"{n['part']}:\n{n['text'] or 'The review did not say what it objected to.'}"
+                               for n in notes), *gaps])
+        return {"engine_disputed": True, "engine_review": text}
 
     def _settled(self, run: AgentRun, show: dict | None, problem: str | None = None) -> None:
         """The run is over (or never took place): keep what it found, then review it or put the workspace back."""
         found, problems = self._read(run)
+        # Before the outcome: a kind may judge a run whose report was disputed differently (qa.outcome_of).
+        found = {**found, **self._review_notes(run, show, problem)}
         fatal = [problem] if problem else []
         if show and not problem:
             if show.get("state") in ("needs_input", "blocked"):
@@ -343,7 +518,7 @@ class WorkspaceRun:
                              + (f", {show['state_reason']}" if show.get("state_reason") else "") + ")")
         stopped = problem == self.stopped
         outcome, doubts = self._outcome(run, found, problems, [] if stopped else fatal, stopped)
-        result = {**found, **(self._engine_notes(show) if show and not problem else {}), "problems": problems,
+        result = {**found, "problems": problems,
                   "fatal": fatal, "doubts": doubts, "engine": (show or {}).get("state"),
                   "settled_at": self.d.now().isoformat()}
         why = [*fatal, *doubts]
@@ -417,6 +592,9 @@ class WorkspaceRun:
         out = self.out_dir(run)
         if out.is_dir() and not out.is_symlink():
             shutil.rmtree(out)
+        linked = self.review_link(run).parent if self.REPORT_FILE else None
+        if linked and linked.is_dir() and not linked.is_symlink() and not linked.parent.is_symlink():
+            shutil.rmtree(linked)
         run = self.store.update_run(run.id, state="done", finished_at=finished)
         self.write_index()
         result = json.loads(run.result or "{}")
@@ -467,14 +645,39 @@ class WorkspaceRun:
                  stopped: bool) -> tuple[str, list[str]]:
         raise NotImplementedError
 
+    @staticmethod
+    def _disputed(show: dict) -> bool:
+        """The engine's Codex read the agent's report and still objected at its round limit (engine/SERVER.md: a
+        `succeeded_research` is reviewed by Codex). A task sent with REPORT_CRITERIA (`--report-at-limit accept`)
+        then ends `done` with `review: passed`, `accepted_with_notes` and the notes in `review_why`; one sent
+        without, or to an engine older than 1.20, ends `failed`, needs-user, with the review's `VERDICT: FAIL`.
+        Either way the report is whole and changed nothing; what is disputed is how some of it is put. That is no
+        reason to throw away everything the run found, nor to show it as accepted: the objections go into the
+        report beside it. Any other `needs-user` (an unreadable verdict, a review that passed but left something
+        for a person, a question) is not this."""
+        receipt = show.get("receipt") or {}
+        if receipt.get("result") != "succeeded_research" or receipt.get("commits"):
+            return False
+        if show.get("state") == "done":
+            return receipt.get("review") == "passed" and receipt.get("accepted_with_notes") is True
+        return (show.get("state") == "failed" and show.get("state_reason") == "needs-user"
+                and receipt.get("review") == "failed" and "VERDICT: FAIL" in str(receipt.get("review_why") or ""))
+
     def _finished(self, show: dict) -> bool:
         """Whether the engine's record shows a run that ended as it should: as a code review does, having changed
-        nothing (code_review.ReviewAgent._finished_well)."""
-        return ReviewAgent._finished_well(show)
+        nothing (code_review.ReviewAgent._finished_well), or with its report disputed (`_disputed`)."""
+        return ReviewAgent._finished_well(show) or self._disputed(show)
 
     def _engine_notes(self, show: dict) -> dict:
-        """What of the engine's record the kind keeps with the result."""
-        return {}
+        """What of the engine's record the kind keeps with the result: that the report was disputed
+        (`engine_disputed`, whether or not the review said why) and its objections, without the review's own heading,
+        cut short and with anything secret-looking taken out."""
+        if not self._disputed(show):
+            return {}
+        why = str((show.get("receipt") or {}).get("review_why") or "")
+        # Markdown bold the report pages would show as literal asterisks.
+        why = why.split("VERDICT: FAIL", 1)[-1].replace("**", "").strip()
+        return {"engine_disputed": True, "engine_review": self.events.redact(clean_text(why, 4000))}
 
     def _wants_review(self, run: AgentRun, outcome: str, result: dict) -> bool:
         """Whether the run has a step between the agent and the report (state `reviewing`, `_review`)."""

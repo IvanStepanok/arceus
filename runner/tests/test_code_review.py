@@ -71,7 +71,9 @@ def ask(w: World, text: str = "/review", author: str = "j.doe") -> None:
 
 
 def reviews(w: World) -> list[dict]:
-    return [c for c in w.calls("dispatch") if c["argv"][1] != "ACME-1"]
+    calls = [c for c in w.calls("dispatch") if c["argv"][1] != "ACME-1"]
+    assert not any(a.startswith("--report") for c in calls for a in c["argv"])   # the engine's own report review
+    return calls
 
 
 def write_verdict(w: World, rid: str = RID, summary: str = "It does what the ticket asks.", entries=None, **fields):

@@ -480,30 +480,6 @@ class ArchitectAgent(WorkspaceRun):
             return "partial", [f"the agent did not say whether it read {', '.join(sorted(named - said))}"]
         return outcome, doubts
 
-    # -- the engine's own review of the report ------------------------------------------------------
-
-    @staticmethod
-    def _disputed(show: dict) -> bool:
-        """The engine's Codex read the agent's report and still objected at its round limit (engine/SERVER.md: a
-        `succeeded_research` is reviewed by Codex; a review that fails its last round ends `failed`, needs-user).
-        The report is whole and changed nothing; what is disputed is how some findings are put. For a review of
-        several findings that is no reason to drop them all: the objections go into the report, and the second
-        opinion judges each finding."""
-        receipt = show.get("receipt") or {}
-        return (show.get("state") == "failed" and show.get("state_reason") == "needs-user"
-                and receipt.get("result") == "succeeded_research" and receipt.get("review") == "failed"
-                and not receipt.get("commits") and "VERDICT: FAIL" in str(receipt.get("review_why") or ""))
-
-    def _finished(self, show: dict) -> bool:
-        return super()._finished(show) or self._disputed(show)
-
-    def _engine_notes(self, show: dict) -> dict:
-        if not self._disputed(show):
-            return {}
-        why = str((show.get("receipt") or {}).get("review_why") or "")
-        why = why.split("VERDICT: FAIL", 1)[-1].strip()
-        return {"engine_review": self.events.redact(clean_text(why, 4000))}
-
     # -- the second opinion -----------------------------------------------------------------------
 
     def _wants_review(self, run: AgentRun, outcome: str, result: dict) -> bool:
@@ -671,7 +647,8 @@ def run_view(run: AgentRun, host, finished: str | None = None) -> dict:
             "scope": snap.get("scope") or [], "context": snap.get("context") or [],
             "since_run": snap.get("since_run"),
             **{k: result.get(k) for k in ("summary", "reviewed", "skipped", "previous", "findings", "problems",
-                                          "fatal", "doubts", "second_opinion", "ledger", "engine_review")}}
+                                          "fatal", "doubts", "second_opinion", "ledger", "engine_disputed",
+                                          "engine_review")}}
 
 
 def index_rows(store: ReviewStore) -> list[dict]:

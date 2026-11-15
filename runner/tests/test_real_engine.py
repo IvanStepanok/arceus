@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -241,5 +242,160 @@ def test_a_code_review_runs_as_its_own_engine_task(tmp_path):
         assert review.outcome == "approved", json.loads(review.result)
         assert git(w.repo, "symbolic-ref", "--short", "HEAD") == task.branch
         assert w.remote_branch(task.branch) == sha and len(w.gl.mrs) == 1
+    finally:
+        next(gen, None)
+
+
+def test_a_test_run_keeps_its_own_review_of_the_report_across_a_continue(tmp_path, secrets):
+    """Bulava 1.20: a test run is sent with three report rounds, its own criteria in place of the server's rule
+    and acceptance with notes at the limit. The engine copies the criteria when it takes the task and puts the
+    budget into the dispatch the review gate reads; a later attempt (`worker-send --relation continue`, what the
+    runner sends after a crash) is reviewed by the same budget."""
+    import json
+    from arceus_runner.qa import REPORT_CRITERIA
+    from arceus_runner.screening import trusted
+    instructions = tmp_path / "qa" / "instructions.md"
+    instructions.parent.mkdir(parents=True)
+    instructions.write_text("Platform: https://staging.example.com\nCheck sign-in.\n")
+    gen = _world(tmp_path, secrets, settings={"qa": {"enabled": True, "instructions": str(instructions),
+                                                     "reports": str(tmp_path / "reports")}})
+    w = next(gen)
+    try:
+        w.store.add_run("qa", "command", "ops")
+        w.tick()
+        rid = "qa-1"
+        assert w.store.run(rid).state == "running", w.events_named("qa_step_failed", "qa_finished")
+        engine = w.runner.delivery.engine
+        wait_state(w, rid, "running")
+
+        def gates() -> tuple[dict, str]:
+            script = f"""
+set -e
+. {shlex.quote(ENGINE)}/bin/supervisor-lib.sh
+I="$(instance_dir "$(slug_for {shlex.quote(str(w.cfg.paths.workspace))})")"
+jq -c '.pipeline_gates' "$I/dispatch.json"
+cat "$I/report-criteria.md"
+"""
+            r = subprocess.run(["bash", "-c", script], env=engine.env(), capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr[-2000:]
+            first, _, rest = r.stdout.partition("\n")
+            return json.loads(first), rest
+
+        g, criteria = gates()
+        assert (g["reportReview"], g["reportMaxRounds"], g["reportAtLimit"]) == (True, 3, "accept")
+        assert criteria.strip() == REPORT_CRITERIA.strip()
+
+        # What the review reads, found and read by the engine's own code as review-gate.sh does it: the findings
+        # as they are at each round, whether the summary names the link (as the brief asks) or not.
+        findings = w.cfg.paths.workspace.resolve() / ".arceus" / "qa" / rid / "findings.json"
+        tool = [sys.executable, f"{ENGINE}/bin/pipeline-tool.py"]
+
+        def reviewer_reads(summary: str) -> str:
+            since = json.loads(subprocess.run(["bash", "-c", f". {shlex.quote(ENGINE)}/bin/supervisor-lib.sh; "
+                f'jq -c . "$(instance_dir "$(slug_for {shlex.quote(str(w.cfg.paths.workspace))})")/dispatch.json"'],
+                env=engine.env(), capture_output=True, text=True, check=True).stdout)["at"]
+            found = subprocess.run([*tool, "find-report", "--cwd", str(w.cfg.paths.workspace), "--summary", summary,
+                                    "--since", since], capture_output=True, text=True).stdout.strip()
+            assert found, "the engine found no report"
+            return subprocess.run([*tool, "report-text", found, "--max", "60000"], capture_output=True,
+                                  text=True, check=True).stdout
+
+        findings.write_text(json.dumps({"summary": "First draft.", "tested": [], "findings": []}))
+        assert "First draft." in reviewer_reads(f"artifacts/{rid}/findings.txt Checked sign-in.")
+        findings.write_text(json.dumps({"summary": "Corrected after the objections.", "tested": [], "findings": []}))
+        assert "Corrected after the objections." in reviewer_reads(f"artifacts/{rid}/findings.txt Checked sign-in.")
+        assert "Corrected after the objections." in reviewer_reads("Checked sign-in.")
+        # The engine's own copy, not the runner's file: editing that later changes nothing for this run.
+        assert Path(g["reportCriteria"]).name == "report-criteria.md"
+        assert Path(g["reportCriteria"]).parent != w.cfg.paths.db.parent / "tasks" / rid
+
+        settle(w, rid, "needs-user", {"schema": 1, "result": "needs_input", "summary": "?", "task_id": rid,
+                                      "question": {"id": "q-1", "text": "?", "options": ["a"]}})
+        wait_state(w, rid, "needs_input")
+        reply = engine.send(task_id=rid, message_id="resume-qa-1-1", source="other", author="ops",
+                            repo=Path(w.cfg.paths.workspace), text="Continue.", clearance=trusted("Continue."),
+                            extra_dirs=w.cfg.paths.db.parent / "tasks" / rid / "extra-dirs.txt")
+        assert reply.accepted, reply.why()
+        show = wait_state(w, rid, "running")
+        assert [a["kind"] for a in show["attempts"]] == ["initial", "continue"]
+        g, criteria = gates()
+        assert (g["reportReview"], g["reportMaxRounds"], g["reportAtLimit"]) == (True, 3, "accept")
+        assert criteria.strip() == REPORT_CRITERIA.strip()
+    finally:
+        next(gen, None)
+
+
+def test_a_report_longer_than_the_review_reads_is_reviewed_part_by_part(tmp_path, secrets):
+    """The engine's review reads at most 60 000 characters of one file. A report past that comes in parts: when the
+    attempt that reviewed the first ends `done`, the runner asks for another attempt naming the second, and the
+    engine's own find-report and report-text give the reviewer that part whole, to its last line."""
+    import json
+    instructions = tmp_path / "qa" / "instructions.md"
+    instructions.parent.mkdir(parents=True)
+    instructions.write_text("Platform: https://staging.example.com\nCheck everything.\n")
+    gen = _world(tmp_path, secrets, settings={"qa": {"enabled": True, "instructions": str(instructions),
+                                                     "reports": str(tmp_path / "reports")}})
+    w = next(gen)
+    try:
+        w.store.add_run("qa", "command", "ops")
+        w.tick()
+        rid = "qa-1"
+        engine = w.runner.delivery.engine
+        wait_state(w, rid, "running")
+        ws = w.cfg.paths.workspace.resolve()
+        out = ws / ".arceus" / "qa" / rid
+
+        def checks(prefix: str, n: int) -> list[dict]:
+            return [{"what": f"{prefix} check {i}: " + "a" * 200, "result": "ok", "note": "b" * 100} for i in range(n)]
+
+        first = {"summary": "Checked 220 things.", "blocked": "", "parts": 2, "checks": 220, "findings_count": 1,
+                 "findings": [{"title": "Export fails", "severity": "major", "steps": ["Open export"],
+                               "expected": "A file.", "actual": "500."}], "tested": checks("first", 110)}
+        marker = "THE LAST LINE OF PART TWO: objection bait"
+        second = {"tested": checks("second", 109) + [{"what": marker, "result": "ok"}]}
+        (out / "findings.json").write_text(json.dumps(first, separators=(",", ":")))
+        (out / "findings-2.json").write_text(json.dumps(second, separators=(",", ":")))
+        whole = (out / "findings.json").read_text() + (out / "findings-2.json").read_text()
+        assert len(whole) > 60_000 and len((out / "findings-2.json").read_text()) < 40_000
+
+        tool = [sys.executable, f"{ENGINE}/bin/pipeline-tool.py"]
+
+        def dispatch_record() -> dict:
+            r = subprocess.run(["bash", "-c", f". {shlex.quote(ENGINE)}/bin/supervisor-lib.sh; "
+                                f'cat "$(instance_dir "$(slug_for {shlex.quote(str(w.cfg.paths.workspace))})")/dispatch.json"'],
+                               env=engine.env(), capture_output=True, text=True, check=True)
+            return json.loads(r.stdout)
+
+        def reviewer_reads(summary: str) -> str:
+            found = subprocess.run([*tool, "find-report", "--cwd", str(w.cfg.paths.workspace), "--summary", summary,
+                                    "--since", dispatch_record()["at"]], capture_output=True, text=True).stdout.strip()
+            assert found, "the engine found no report"
+            return subprocess.run([*tool, "report-text", found, "--max", "60000"], capture_output=True,
+                                  text=True, check=True).stdout
+
+        assert "first check 109" in reviewer_reads(f"artifacts/{rid}/findings.txt Checked 220 things.")
+        settle(w, rid, "passed", {"schema": 1, "result": "succeeded_research", "summary": "x", "task_id": rid})
+        wait_state(w, rid, "done")
+        w.tick()                                   # the runner asks for the second part
+        show = wait_state(w, rid, "running")
+        assert [a["kind"] for a in show["attempts"]] == ["initial", "continue"]
+        rec = dispatch_record()
+        assert (rec["pipeline_gates"]["reportMaxRounds"], rec["pipeline_gates"]["reportAtLimit"]) == (3, "accept")
+        assert f"artifacts/{rid}/findings-2.txt" in rec["task"]
+        text = reviewer_reads(f"artifacts/{rid}/findings-2.txt Checked 220 things.")
+        assert text.rstrip().endswith(json.dumps(second, separators=(",", ":"))[-60:].rstrip()) and marker in text
+        assert "second check 0" in text
+
+        settle(w, rid, "passed", {"schema": 1, "result": "succeeded_research", "summary": "x", "task_id": rid})
+        wait_state(w, rid, "done")
+        deadline = time.time() + 30
+        while w.store.run(rid).state != "done" and time.time() < deadline:
+            w.tick()
+            time.sleep(0.3)
+        run = w.store.run(rid)
+        result = json.loads(run.result)
+        assert (run.state, run.outcome) == ("done", "found"), result
+        assert len(result["tested"]) == 220 and result["problems"] == [] and "engine_disputed" not in result
+        assert not (ws / "artifacts" / rid).exists()
     finally:
         next(gen, None)

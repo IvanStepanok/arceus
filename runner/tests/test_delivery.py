@@ -207,6 +207,7 @@ def test_ticket_to_merge_request(w):
                               "--author", "j.doe", "--branch", "agent/ACME-1-fix-login-page", "--base", "main",
                               "--dirty", "fail"]
     assert d["argv"][14] == str(w.cfg.paths.workspace) and d["argv"][15].startswith("ACME-1: Fix login page")
+    assert len(d["argv"]) == 16   # no review budget of its own: a ticket's report is reviewed by the server's rule
     for name in ("acme-platform", "acme-theme"):
         assert git(w.cfg.paths.workspace / name, "branch", "--show-current") == "agent/ACME-1-fix-login-page"
     # Bulava gets the Claude token and the engine settings, never the runner's own tokens.

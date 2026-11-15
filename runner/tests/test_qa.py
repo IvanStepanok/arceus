@@ -172,6 +172,413 @@ def test_a_run_that_failed_in_the_engine_is_unfinished_whatever_it_wrote(w):
     assert "did not finish as it should" in page and "Reset link gives 404" in page
 
 
+# The engine's record of a production run whose report the closing review still disputed after its last round
+# (staging, run 2): the testing finished, nothing was committed, and the objections were about how the report put it.
+OBJECTION = ("STATE: COMPLETE\nVERDICT: FAIL\n\n1. **The change ledger** does not list the records the run created.\n"
+             "2. Finding 1's screenshot does not show the failed step.")
+
+
+def disputed(w: World, review: str = "failed", why: str = OBJECTION, commits=()) -> None:
+    finish(w, state="failed", state_reason="needs-user",
+           receipt={"result": "succeeded_research", "review": review, "commits": list(commits), "review_why": why})
+
+
+WHOLE = [{"title": "Reset link gives 404", "severity": "major", "steps": ["Open the link from the mail"],
+          "expected": "The reset form.", "actual": "404 Not Found.", "evidence": [{"file": "reset.png", "step": 1}],
+          "reproduced": 2, "attempts": 2}]
+
+
+def test_a_report_the_closing_review_disputed_keeps_its_findings_and_shows_the_objections(w):
+    queue(w)
+    report(w, findings=WHOLE)
+    disputed(w)
+    run = w.store.run(RID)
+    assert (run.state, run.outcome, run.reason) == ("done", "found", None)
+    result = json.loads((w.cfg.qa.reports / "1" / "result.json").read_text())
+    assert result["fatal"] == [] and result["engine_disputed"] is True
+    assert result["engine_review"].startswith("1. The change ledger")
+    assert "VERDICT" not in result["engine_review"] and "**" not in result["engine_review"]
+    page = (w.cfg.qa.reports / "1" / "report.html").read_text()
+    assert "1 problem found" in page and "Reset link gives 404" in page
+    assert "did not pass its closing review" in page and "records the run created" in page
+    assert "did not finish as it should" not in page and "Codex" not in page
+    # The console builds its page from the same result.json.
+    title, body = qa_report.run_body(result, "acme", ZoneInfo("UTC"))
+    assert "did not pass its closing review" in body and title == "Run 1: 1 problem found"
+    [published] = w.events_named("qa_published")
+    assert published["outcome"] == "found"
+
+
+def test_a_disputed_report_that_found_nothing_is_never_a_pass_and_every_view_says_why(w):
+    queue(w)
+    report(w, findings=[], tested=[{"what": "Sign-in as the customer", "result": "ok"}])
+    disputed(w)
+    run = w.store.run(RID)
+    assert run.outcome == "partial" and "closing review" in run.reason
+    head = qa_report.DISPUTED_PARTIAL
+    assert head in (w.cfg.qa.reports / "1" / "report.html").read_text()
+    from arceus_runner.qa import index_rows
+    from arceus_runner.console import runs
+    [row] = runs.dress(index_rows(w.store, w.cfg.qa.reports), qa_report.head_of)
+    assert row["result_text"] == head
+    assert head in qa_report.render_index(index_rows(w.store, w.cfg.qa.reports), "acme", ZoneInfo("UTC"))
+
+
+def test_a_disputed_report_without_its_objections_is_still_disputed(w):
+    queue(w)
+    report(w, findings=[], tested=[{"what": "Sign-in as the customer", "result": "ok"}])
+    disputed(w, why="STATE: COMPLETE\nVERDICT: FAIL\n")
+    run = w.store.run(RID)
+    assert run.outcome == "partial"
+    result = json.loads(run.result)
+    assert result["engine_disputed"] is True and result["engine_review"] == ""
+    assert "did not say what it objected to" in (w.cfg.qa.reports / "1" / "report.html").read_text()
+
+
+@pytest.mark.parametrize("tested", [
+    [],                                                    # names no check at all
+    [{"what": "Sign-in as the customer", "result": "skipped"}],   # none done
+    [{"what": "Sign-in as the customer", "result": "blocked"}],
+])
+def test_a_disputed_report_that_shows_no_testing_stays_unfinished_with_its_findings_kept(w, tested):
+    queue(w)
+    report(w, findings=WHOLE, tested=tested)
+    disputed(w)
+    run = w.store.run(RID)
+    assert run.outcome == "unfinished" and "names no check that was done" in run.reason
+    assert len(json.loads(run.result)["findings"]) == 1
+    page = (w.cfg.qa.reports / "1" / "report.html").read_text()
+    assert "Did not finish" in page and "Reset link gives 404" in page and "did not pass its closing review" in page
+
+
+def test_a_disputed_report_the_runner_could_not_read_whole_stays_unfinished(w):
+    queue(w)
+    report(w)   # its second piece of evidence is not an image: left out
+    disputed(w)
+    run = w.store.run(RID)
+    assert run.outcome == "unfinished" and "could not be read" in run.reason
+    assert len(json.loads(run.result)["findings"]) == 1
+
+
+def test_a_disputed_report_that_tested_nothing_stays_unfinished(w):
+    queue(w)
+    report(w, findings=[], tested=[])
+    disputed(w)
+    assert w.store.run(RID).outcome == "unfinished"
+
+
+@pytest.mark.parametrize("review, why, commits", [
+    ("passed", "", ()),                    # passed, but left something for a person
+    ("failed", "the review could not run", ()),  # no verdict to show
+    ("failed", OBJECTION, ("abc123",)),    # a tester commits nothing
+])
+def test_needs_user_for_any_other_reason_is_still_an_unfinished_run(w, review, why, commits):
+    queue(w)
+    report(w)
+    disputed(w, review=review, why=why, commits=commits)
+    run = w.store.run(RID)
+    assert run.outcome == "unfinished" and "needs-user" in run.reason
+    assert "engine_review" not in json.loads(run.result)
+
+
+# Bulava 1.20: a test run is sent with its own review of the closing report, and a report still disputed at the
+# limit is accepted with the reviewer's notes: the task ends `done`, the review `passed`, `accepted_with_notes`.
+
+def accepted_with_notes(w: World, why: str = OBJECTION, **receipt) -> None:
+    finish(w, receipt={"result": "succeeded_research", "review": "passed", "accepted_with_notes": True,
+                       "commits": [], "review_why": why, **receipt})
+
+
+def test_a_run_is_sent_with_its_own_review_of_the_report_kept_outside_the_workspace(w):
+    from arceus_runner.qa import REPORT_CRITERIA
+    queue(w)
+    [call] = dispatches(w)
+    argv = call["argv"]
+    assert argv[argv.index("--report-max-rounds") + 1] == "3"
+    assert argv[argv.index("--report-at-limit") + 1] == "accept"
+    criteria = Path(argv[argv.index("--report-criteria") + 1])
+    assert criteria.read_text() == REPORT_CRITERIA and "undoing each record is not asked for" in REPORT_CRITERIA
+    assert criteria.parent == w.cfg.paths.db.parent / "tasks" / RID
+    assert w.cfg.paths.workspace.resolve() not in criteria.resolve().parents
+    # The flags come before the folder and the text, which stay the last two arguments.
+    assert argv[-2] == str(w.cfg.paths.workspace) and "## The closing review" in argv[-1]
+    assert REPORT_CRITERIA in argv[-1] and "up to 3 rounds" in argv[-1]
+
+
+def test_the_engine_review_reads_the_findings_through_a_link_in_artifacts_and_it_goes_with_the_run(w):
+    queue(w)
+    ws = w.cfg.paths.workspace.resolve()
+    link = ws / "artifacts" / RID / "findings.txt"
+    assert link.is_symlink() and not Path(link.readlink()).is_absolute()
+    report(w, findings=WHOLE)
+    assert link.resolve() == (out_dir(w) / "findings.json").resolve()
+    assert json.loads(link.read_text())["findings"][0]["title"] == "Reset link gives 404"
+    text = dispatches(w)[0]["argv"][-1]
+    assert f"starting with `artifacts/{RID}/findings.txt`" in text and "compact JSON" in text
+    finish(w)
+    assert not (ws / "artifacts" / RID).exists() and w.store.run(RID).state == "done"
+
+
+def test_no_link_is_made_through_an_artifacts_folder_that_is_itself_a_link(w, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    w.cfg.paths.workspace.mkdir(parents=True, exist_ok=True)
+    (w.cfg.paths.workspace / "artifacts").symlink_to(elsewhere)
+    queue(w)
+    assert list(elsewhere.iterdir()) == [] and w.events_named("qa_review_link_skipped")
+    assert w.store.run(RID).state == "running"
+    report(w, findings=WHOLE)
+    finish(w)
+    assert elsewhere.is_dir() and w.store.run(RID).outcome == "found"
+
+
+def test_a_resumed_run_is_not_sent_the_review_again_the_engine_keeps_it(w):
+    queue(w)
+    w.set_engine(lambda s: s["tasks"][RID].update(attempt_live=False))
+    w.tick()
+    [send] = [c for c in w.calls("worker-send") if RID in c["argv"]]
+    assert not any(a.startswith("--report") for a in send["argv"])
+
+
+def test_a_report_accepted_with_notes_keeps_its_findings_and_shows_the_objections(w):
+    queue(w)
+    report(w, findings=WHOLE)
+    accepted_with_notes(w)
+    run = w.store.run(RID)
+    assert (run.state, run.outcome, run.reason) == ("done", "found", None)
+    result = json.loads(run.result)
+    assert result["fatal"] == [] and result["engine_disputed"] is True
+    assert result["engine_review"].startswith("1. The change ledger")
+    page = (w.cfg.qa.reports / "1" / "report.html").read_text()
+    assert "1 problem found" in page and "did not pass its closing review" in page and "records the run created" in page
+
+
+def test_a_report_accepted_with_notes_that_found_nothing_is_never_a_pass(w):
+    queue(w)
+    report(w, findings=[], tested=[{"what": "Sign-in as the customer", "result": "ok"}])
+    accepted_with_notes(w, why="1. The summary counts 14 accounts, the checks name 13.")
+    run = w.store.run(RID)
+    assert run.outcome == "partial" and "closing review" in run.reason
+    assert json.loads(run.result)["engine_review"] == "1. The summary counts 14 accounts, the checks name 13."
+    assert qa_report.DISPUTED_PARTIAL in (w.cfg.qa.reports / "1" / "report.html").read_text()
+
+
+def test_a_report_accepted_with_notes_that_shows_no_testing_stays_unfinished(w):
+    queue(w)
+    report(w, findings=WHOLE, tested=[])
+    accepted_with_notes(w)
+    run = w.store.run(RID)
+    assert run.outcome == "unfinished" and "names no check that was done" in run.reason
+
+
+@pytest.mark.parametrize("receipt", [
+    {"accepted_with_notes": False},                       # an ordinary pass
+    {"accepted_with_notes": True, "commits": ["abc123"]},  # a tester commits nothing
+    {"accepted_with_notes": True, "result": "succeeded_changes"},
+])
+def test_only_a_report_let_through_at_its_limit_counts_as_accepted_with_notes(w, receipt):
+    queue(w)
+    report(w, findings=[], tested=[{"what": "Sign-in as the customer", "result": "ok"}])
+    accepted_with_notes(w, **receipt)
+    result = json.loads(w.store.run(RID).result)
+    assert "engine_disputed" not in result and "engine_review" not in result
+
+
+def test_an_unreadable_review_at_the_limit_is_still_an_unfinished_run(w):
+    """With `accept`, the engine lets through only a readable FAIL; anything else ends needs-user, unreadable."""
+    queue(w)
+    report(w, findings=WHOLE)
+    disputed(w, why="the reviewer's answer had no verdict")
+    run = w.store.run(RID)
+    assert run.outcome == "unfinished" and "needs-user" in run.reason
+
+
+def test_live_test_runs_need_an_engine_that_takes_their_review_of_the_report(w, tmp_path):
+    from arceus_runner import bulava, loop
+    root = tmp_path / "old-engine"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin" / "dispatch.sh").write_text("#!/bin/sh\n# --task-id --branch --base --dirty SUPERVISOR_PROFILE\n")
+    old = bulava.probe(root)
+    assert old.missing_for_test_runs() == ["dispatch.sh --report-max-rounds --report-criteria",
+                                           "dispatch.sh --report-at-limit accept"]
+    with pytest.raises(loop.LiveModeUnavailable, match="--report-criteria"):
+        loop.require_mode_ready(w.cfg, old)
+    (root / "bin" / "dispatch.sh").write_text("#!/bin/sh\n--report-criteria) ;; --report-at-limit) ;;\n")
+    assert bulava.probe(root).missing_for_test_runs() == []
+
+
+# A report longer than the engine's review reads of one file comes in parts, each reviewed in an attempt of its own.
+
+CHECK = {"what": "Sign-in as the customer", "result": "ok"}
+
+
+def report_in_parts(w: World, second: dict | None = None, **first) -> None:
+    report(w, **{"findings": WHOLE, "tested": [CHECK], "parts": 2, "checks": 2, "findings_count": 2, **first})
+    part = second if second is not None else {
+        "tested": [{"what": "Password reset", "result": "problem"}],
+        "findings": [{**WHOLE[0], "title": "Reset mail never arrives"}]}
+    (out_dir(w) / "findings-2.json").write_text(json.dumps(part))
+
+
+def passed(w: World) -> None:
+    """An attempt whose part the review passed: the engine writes the receipt afresh for every attempt."""
+    finish(w, receipt={"result": "succeeded_research", "review": "passed", "commits": [], "review_why": ""})
+
+
+def sends(w: World) -> list[dict]:
+    return [c for c in w.calls("worker-send") if RID in c["argv"]]
+
+
+def test_a_report_in_parts_is_reviewed_part_by_part_and_published_whole(w):
+    queue(w)
+    report_in_parts(w)
+    accepted_with_notes(w, why="STATE: COMPLETE\nVERDICT: FAIL\n1. Finding 1 names no URL.")
+    # The first part is done: the runner links the second and asks the agent to finish again naming it.
+    run = w.store.run(RID)
+    assert run.state == "running"
+    [send] = sends(w)
+    argv = send["argv"]
+    assert argv[argv.index("--message-id") + 1] == f"review-{RID}-2"
+    assert f"`artifacts/{RID}/findings-2.txt`" in argv[-1] and "findings.json" in argv[-1]
+    link = w.cfg.paths.workspace.resolve() / "artifacts" / RID / "findings-2.txt"
+    assert link.resolve() == (out_dir(w) / "findings-2.json").resolve()
+    assert w.events_named("qa_review_part")[0]["part"] == "findings-2.json"
+    passed(w)   # the second part passes
+    run = w.store.run(RID)
+    assert (run.state, run.outcome) == ("done", "found")
+    result = json.loads(run.result)
+    assert [f["title"] for f in result["findings"]] == ["Reset link gives 404", "Reset mail never arrives"]
+    assert len(result["tested"]) == 2 and result["problems"] == []
+    # The objections on the first part stay, named by the part they are about.
+    assert result["engine_disputed"] is True and result["engine_review"] == "findings.json:\n1. Finding 1 names no URL."
+    assert len(sends(w)) == 1
+
+
+def test_objections_on_the_last_part_are_kept_with_its_name(w):
+    queue(w)
+    report_in_parts(w)
+    passed(w)
+    accepted_with_notes(w, why="STATE: COMPLETE\nVERDICT: FAIL\n1. The second finding has no screenshot.")
+    result = json.loads(w.store.run(RID).result)
+    assert result["engine_review"] == "findings-2.json:\n1. The second finding has no screenshot."
+
+
+def test_a_report_in_parts_every_part_passed_is_clean(w):
+    queue(w)
+    report_in_parts(w)
+    passed(w)
+    passed(w)
+    result = json.loads(w.store.run(RID).result)
+    assert "engine_disputed" not in result and w.store.run(RID).outcome == "found"
+
+
+def test_a_busy_engine_gets_the_part_again_and_a_restart_never_sends_two(w):
+    queue(w)
+    report_in_parts(w)
+    w.set_engine(lambda s: s["next_rc"].update({"worker-send": 6}))
+    passed(w)
+    assert w.store.run(RID).state == "running" and len(sends(w)) == 1
+    snap = json.loads(w.store.run(RID).snapshot)
+    assert snap["review"]["sent"] is False
+    w.tick()                                   # sent now
+    assert json.loads(w.store.run(RID).snapshot)["review"]["sent"] is True
+    # A runner that died after the send and before marking it: the same message again, taken once.
+    run = w.store.run(RID)
+    snap = json.loads(run.snapshot)
+    w.store.update_run(RID, snapshot=json.dumps({**snap, "review": {**snap["review"], "sent": False}}))
+    w.tick()
+    attempts = w.engine_state()["tasks"][RID]["attempts"]
+    assert [a["kind"] for a in attempts] == ["initial", "continue"]
+    passed(w)
+    assert w.store.run(RID).outcome == "found"
+
+
+def test_a_part_changed_after_its_review_counts_as_not_reviewed(w):
+    queue(w)
+    report_in_parts(w)
+    passed(w)
+    data = json.loads((out_dir(w) / "findings.json").read_text())
+    (out_dir(w) / "findings.json").write_text(json.dumps({**data, "summary": "Rewritten after its review."}))
+    passed(w)
+    result = json.loads(w.store.run(RID).result)
+    assert result["engine_disputed"] is True and "findings.json changed after its review" in result["engine_review"]
+
+
+def test_a_part_the_review_never_reached_is_said_so(w):
+    queue(w)
+    report_in_parts(w)
+    w.set_engine(lambda s: s["next_rc"].update({"worker-send": 2}))   # the engine refuses the next attempt
+    passed(w)
+    w.tick()
+    run = w.store.run(RID)
+    assert run.state == "done" and run.outcome == "found"
+    review = json.loads(run.result)["engine_review"]
+    assert "findings-2.json was not reviewed before the run ended (the engine did not take it" in review
+    assert w.events_named("qa_review_part_refused")
+
+
+def test_a_part_added_after_the_parts_were_counted_is_not_reviewed(w):
+    queue(w)
+    report_in_parts(w)
+    passed(w)
+    (out_dir(w) / "findings-3.json").write_text(json.dumps({"tested": [CHECK]}))
+    passed(w)
+    result = json.loads(w.store.run(RID).result)
+    assert "findings-3.json was not reviewed before the run ended" in result["engine_review"]
+    assert any("says 2 parts, the report has 3" in p for p in result["problems"])
+
+
+def test_a_run_that_runs_out_of_time_between_parts_says_which_were_not_reviewed(w):
+    queue(w)
+    report_in_parts(w)
+    w.now += w.cfg.qa.timeout + timedelta(minutes=1)
+    passed(w)
+    run = w.store.run(RID)
+    assert run.state == "done" and sends(w) == []
+    assert "findings-2.json was not reviewed before the run ended" in json.loads(run.result)["engine_review"]
+
+
+@pytest.mark.parametrize("first, second, problem", [
+    ({"parts": 3}, None, "says 3 parts, the report has 2"),
+    ({"checks": 5}, None, "says 5 checks, the report has 2"),
+    ({"findings_count": None}, None, "does not say how many findings"),
+    ({}, {"tested": [{"what": "x" * 300, "result": "ok", "note": "é" * 300}] * 120}, "findings-2.json is"),
+])
+def test_what_the_first_part_says_of_the_whole_and_a_part_too_long_to_review_are_checked(w, first, second, problem):
+    queue(w)
+    report_in_parts(w, second, **first)
+    passed(w)
+    passed(w)
+    result = json.loads(w.store.run(RID).result)
+    assert any(problem in p for p in result["problems"]), result["problems"]
+
+
+def test_a_gap_in_the_numbering_is_not_read_as_the_end_of_the_report(w):
+    queue(w)
+    report(w, findings=WHOLE, tested=[CHECK])
+    (out_dir(w) / "findings-3.json").write_text(json.dumps({"tested": [CHECK]}))
+    passed(w)
+    run = w.store.run(RID)
+    assert any("not numbered without a gap" in p and "findings-3.json" in p for p in json.loads(run.result)["problems"])
+
+
+def test_a_session_interrupted_while_a_later_part_is_reviewed_is_told_which_part_to_name(w):
+    queue(w)
+    report_in_parts(w)
+    passed(w)
+    w.set_engine(lambda s: s["tasks"][RID].update(attempt_live=False))   # the part's session died
+    w.tick()
+    resume = [c for c in sends(w) if c["argv"][c["argv"].index("--message-id") + 1].startswith("resume-")]
+    assert len(resume) == 1 and f"`artifacts/{RID}/findings-2.txt`" in resume[0]["argv"][-1]
+
+
+def test_the_brief_tells_how_to_split_a_long_report(w):
+    queue(w)
+    text = dispatches(w)[0]["argv"][-1]
+    assert "`findings-2.json`" in text and "under 40 KB" in text and "`\"findings_count\"`" in text
+    assert "one part at a time" in text
+
+
 def test_without_instructions_nothing_is_dispatched_and_the_report_says_why(tmp_path):
     w = world(tmp_path, instructions=None)
     try:

@@ -49,6 +49,22 @@ class Reply:
         return f"exit {self.rc}" + (f": {last[-1][:300]}" if last else "")
 
 
+@dataclass(frozen=True)
+class ReportReview:
+    """How the engine's Codex reviews one task's closing report (engine/SERVER.md, "Review budget of a task"): at
+    most `rounds` rounds, judged by the `criteria` file instead of the server's rule about data changes, and at the
+    limit either accepted with the reviewer's notes (`accept`) or handed to a person (`ask`). The engine keeps it with
+    the task, so a later attempt (`worker-send --relation continue`) is reviewed the same way; a task sent without
+    it gets the engine's defaults."""
+    rounds: int
+    criteria: Path
+    at_limit: str = "accept"
+
+    def args(self) -> list[str]:
+        return ["--report-max-rounds", str(self.rounds), "--report-criteria", str(self.criteria),
+                "--report-at-limit", self.at_limit]
+
+
 def _require(clearance: Clearance, text: str, task_id: str) -> None:
     """Nothing reaches the agent that the security screen did not clear, or that is not the runner's own."""
     if not isinstance(clearance, Clearance) or not clearance.covers(text):
@@ -173,12 +189,14 @@ class Engine:
             raise EngineError(f"{Path(args[0]).name}: {e}") from None
 
     def dispatch(self, *, task_id: str, message_id: str, author: str, branch: str, base: str, repo: Path,
-                 text: str, clearance: Clearance, source: str = "tracker", extra_dirs: Path | None = None) -> Reply:
+                 text: str, clearance: Clearance, source: str = "tracker", extra_dirs: Path | None = None,
+                 report_review: ReportReview | None = None) -> Reply:
         _require(clearance, text, task_id)
         text = self._noted(task_id, text)
         return self._call("dispatch", task_id, message_id, [
             str(self.bin / "dispatch.sh"), "--task-id", task_id, "--message-id", message_id, "--source", source,
-            "--author", author, "--branch", branch, "--base", base, "--dirty", "fail", str(repo), text], extra_dirs)
+            "--author", author, "--branch", branch, "--base", base, "--dirty", "fail",
+            *(report_review.args() if report_review else ()), str(repo), text], extra_dirs)
 
     def _noted(self, task_id: str, text: str) -> str:
         note = self.notes(task_id)

@@ -44,6 +44,12 @@ CAPABILITIES: tuple[Capability, ...] = (
                r"SUPERVISOR_ON_OUTCOME", "SUPERVISOR_ON_OUTCOME hook"),
     Capability("doctor.server", 2, ("bin/ns-cli.py", "bin/night-shift.sh"), r"[\"']--server[\"']",
                "night-shift doctor --server --json"),
+    # Needed for test runs (qa.enabled): their own review of the closing report (engine/SERVER.md, "Review budget of
+    # a task"). An engine without them reads the first flag as the project folder and refuses the run.
+    Capability("dispatch.report_criteria", 2, ("bin/dispatch.sh",), r"--report-criteria\b",
+               "dispatch.sh --report-max-rounds --report-criteria"),
+    Capability("dispatch.report_at_limit", 2, ("bin/dispatch.sh",), r"--report-at-limit\b",
+               "dispatch.sh --report-at-limit accept"),
     # Not needed for live work: needed only when config.yaml chooses a model or a depth.
     Capability("settings.models", 3, ("supervisor/config.sh",), r"SUPERVISOR_CLAUDE_MODEL",
                "SUPERVISOR_{CLAUDE,CODEX}_{MODEL,EFFORT}"),
@@ -68,6 +74,11 @@ class Probe:
     def missing_for_live(self) -> list[str]:
         """What `mode: live` uses: every wave 1 contract, `task show` and `worker-send --relation`."""
         need = {c.name for c in CAPABILITIES if c.wave == 1} | {"night_shift.task_show", "worker_send.relation"}
+        return [c.meaning for c in CAPABILITIES if c.name in need and not self.advertised.get(c.name)]
+
+    def missing_for_test_runs(self) -> list[str]:
+        """What test runs (qa.py) need on top of live work: their own review budget for the closing report."""
+        need = ("dispatch.report_criteria", "dispatch.report_at_limit")
         return [c.meaning for c in CAPABILITIES if c.name in need and not self.advertised.get(c.name)]
 
     def missing_for_models(self) -> list[str]:
