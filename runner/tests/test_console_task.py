@@ -498,3 +498,79 @@ def test_odd_screening_categories_do_not_break_the_page(w):
     w.store.conn.execute("UPDATE screenings SET categories = 'null'")
     w.store.open_hold("ACME-2", "d" * 64, "comment", "[]", "code_review", None, "2026-11-15T08:00:00Z")
     assert "dddddddddddd" in page(w, "/tasks/ACME-2/")
+
+
+# -- an open page follows the task --------------------------------------------------------------------------------------
+
+def parts_of(html: str) -> dict[str, str]:
+    """The page's parts as console.js sees them: each top-level <div data-part="name">, by name."""
+    out, pos = {}, 0
+    while (m := re.compile(r'<div data-part="([a-z]+)"[^>]*>').search(html, pos)):
+        depth, i = 1, m.end()
+        while depth:
+            nxt = re.compile(r"<div\b|</div>").search(html, i)
+            depth += 1 if nxt.group(0) == "<div" else -1
+            i = nxt.end()
+        out[m.group(1)] = html[m.end():i - len("</div>")].strip()
+        pos = i
+    return out
+
+
+def test_an_open_page_follows_the_task_through_questions_merge_requests_and_reviews(w):
+    """What the page's script puts in, step by step, without a reload: a part changes only when its data does, so the
+    question being read stays as it is; an answered question goes; a new one, the MRs and a review's progress come."""
+    now = time.time()
+    c = signed_in(w.settings, "owner@example.com")
+    task(w.store, "ACME-7", "dispatched", "Pick a store")
+    first = parts_of(c.get("/tasks/ACME-7/").text)
+    assert set(first) == {"head", "question", "hold", "facts", "mrs", "reviews"} and first["question"] == ""
+
+    def live() -> dict[str, str]:
+        r = c.get("/tasks/ACME-7/live")
+        assert r.status_code == 200 and "<html" not in r.text
+        return parts_of(r.text)
+
+    # The agent asks: the reason and the question arrive together.
+    w.store.update_task("ACME-7", state="needs_input", question_id="q-1", question_at_ms=int(now * 1000),
+                        question=json.dumps({"id": "q-1", "text": "FIRST QUESTION, whole", "options": ["A", "B"]}))
+    asked = live()
+    assert 'data-reason="person"' in asked["head"] and "FIRST QUESTION, whole" in asked["question"]
+    assert "Answer on the ticket" in asked["question"]
+    # Nothing changed: the question's part is the same HTML, so the script leaves the reader's text alone.
+    assert live()["question"] == asked["question"]
+    # Answered: the agent works again and the question is gone, with its answer button.
+    w.store.update_task("ACME-7", state="dispatched", question_id=None, question_at_ms=None)
+    answered = live()
+    assert answered["question"] == "" and 'data-reason="person"' not in answered["head"]
+    # The next question replaces nothing of the first: only its own words show.
+    w.store.update_task("ACME-7", state="needs_input", question_id="q-2", question_at_ms=int(now * 1000),
+                        question=json.dumps({"id": "q-2", "text": "SECOND QUESTION", "options": []}))
+    second = live()
+    assert "SECOND QUESTION" in second["question"] and "FIRST QUESTION" not in second["question"]
+    # Published: the merge request with its commit replaces "None yet".
+    assert "None yet" in second["mrs"]
+    w.store.update_task("ACME-7", state="code_review", question_id=None, question_at_ms=None)
+    w.store.upsert_mr("ACME-7", "shop/api", 11, 5, "https://gitlab.example.com/shop/api/-/merge_requests/5", "c" * 40)
+    published = live()
+    assert "merge_requests/5" in published["mrs"] and "None yet" not in published["mrs"]
+    assert "c" * 12 in published["mrs"] and published["question"] == ""
+    assert 'data-reason="mr_review"' in published["head"]
+    # A code review is asked for, runs with its own live figures, and ends with its outcome.
+    w.store.add_review("ACME-7", "c-9", "ivan", int(now * 1000), "")
+    w.store.update_review("ACME-7.review-1", state="running", started_at="2026-11-15T09:00:00Z")
+    w.metrics_text = metrics(steps={"ACME-7.review-1": ("agent", "running", now - 60)},
+                             observed={"ACME-7.review-1": now - 2}, active={"ACME-7.review-1": now - 5})
+    running = live()
+    assert 'id="review-1"' in running["reviews"] and "<code class=\"lit\">agent</code> running" in running["reviews"]
+    assert "Code review 1: the review agent" in running["head"]
+    w.store.update_review("ACME-7.review-1", state="done", outcome="approved")
+    w.metrics_text = metrics()
+    done = live()
+    assert "Approved" in done["reviews"] and "<code class=\"lit\">agent</code>" not in done["reviews"]
+    assert 'data-reason="mr_review"' in done["head"]
+
+
+def test_the_page_never_stops_following_a_task_that_a_continue_can_take_up_again(w):
+    task(w.store, "ACME-4", "failed", reason="boom", failed_at_ms=int(time.time() * 1000))
+    html = page(w, "/tasks/ACME-4/")
+    assert "data-final" not in html and 'data-refresh-parts="/tasks/ACME-4/live"' in html

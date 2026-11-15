@@ -1,86 +1,11 @@
 {% extends "base.html" %}
-{% from "execution.html" import headline, fresh_marker, live_rows %}
 {% block body %}
 <p class="crumb"><a href="/tasks/">Tasks</a> / {{ t.key }}</p>
 <h1 class="task-title">{{ t.key }}{% if t.summary %} <span>{{ t.summary }}</span>{% endif %}</h1>
 <p class="meta task-meta">{% if t.kind_words %}{{ t.kind_words }}{% endif %}{% if t.author %} · tagged by {{ t.author }}{% endif %}
   · {% if t.issue_url %}<a href="{{ t.issue_url }}" target="_blank" rel="noopener">The ticket<span class="external" aria-hidden="true">↗</span><span class="sr"> (opens in a new tab)</span></a>{% else %}no link to the ticket{% endif %}</p>
 
-<div class="task-head" data-refresh="/tasks/{{ t.key }}/live?part=head" data-every="15" aria-live="polite">
-{% with part = "head" %}{% include "task_live.html" %}{% endwith %}
+<div class="task-parts" data-refresh-parts="/tasks/{{ t.key }}/live" data-every="15">
+{% include "task_parts.html" %}
 </div>
-
-{% if t.question %}
-{% set q = t.question %}
-<section class="card question" id="question">
-  <h2>{% if q.blocked %}The agent cannot go on without a decision{% else %}The agent's question{% endif %}</h2>
-  {% if q.unreadable %}
-  <p>The question's record cannot be read here. The ticket has it.</p>
-  {% else %}
-  <div class="question-text">{{ q.text }}</div>
-  {% if q.cut %}<p class="note">The runner kept only the start of this question (it was asked before questions were kept whole). The ticket has all of it.</p>{% endif %}
-  {% if q.options %}
-  <ol class="options">{% for o in q.options %}<li>{{ o }}</li>{% endfor %}</ol>
-  {% endif %}
-  {% endif %}
-  <p class="answer-here">{% if t.issue_url %}<a class="btn primary" href="{{ t.issue_url }}" target="_blank" rel="noopener">Answer on the ticket<span class="external" aria-hidden="true">↗</span><span class="sr"> (opens in a new tab)</span></a>{% endif %}
-    <span class="note">{% if q.options %}Reply with a comment: the option's number or your own words.{% else %}Reply with a comment on the ticket.{% endif %} The console does not send answers.</span></p>
-</section>
-{% endif %}
-
-{% if t.hold %}
-<section class="card" id="hold">
-  <h2>What the security screen held</h2>
-  <dl class="facts">
-    <dt>Text</dt><dd>{{ t.hold.kind|replace("_", " ") }}</dd>
-    <dt>Code</dt><dd><code class="lit">{{ t.hold.code }}</code></dd>
-    {% if t.hold.categories %}<dt>Found</dt><dd>{{ t.hold.categories|join(", ") }}</dd>{% endif %}
-    <dt>Held</dt><dd>{{ t.hold.held_at|when }}</dd>
-  </dl>
-  <p class="note spaced-top">Decided on the ticket: <code class="lit">/security-allow {{ t.hold.code }}</code> or <code class="lit">/security-reject {{ t.hold.code }}</code>, by a security reviewer whose words are not in the text.</p>
-</section>
-{% endif %}
-
-<div class="task-facts" data-refresh="/tasks/{{ t.key }}/live?part=facts" data-every="15">
-{% with part = "facts" %}{% include "task_live.html" %}{% endwith %}
-</div>
-
-{% if t.taken and t.kind != "review" %}
-<section id="mrs">
-  <h2>Merge requests</h2>
-  {% if t.mrs %}
-  <ul class="rows mr-rows">
-    {% for m in t.mrs %}
-    <li><span class="tag {{ 'ok' if m.state == 'merged' else 'quiet' if m.state == 'closed' else 'busy' }}">{{ (m.state or "Open")|capitalize }}</span>
-      <span class="what"><a href="{{ m.url }}" target="_blank" rel="noopener">{{ m.repo or m.url }}{% if m.iid %} !{{ m.iid }}{% endif %}<span class="external" aria-hidden="true">↗</span><span class="sr"> (opens in a new tab)</span></a>
-        {% if m.sha %}<span class="note">Commit Codex passed: <code class="lit" title="{{ m.sha }}">{{ m.sha[:12] }}</code></span>{% endif %}</span></li>
-    {% endfor %}
-  </ul>
-  {% elif t.research %}
-  <p class="empty">A research ticket: the answer goes on the ticket, nothing is published.</p>
-  {% else %}
-  <p class="empty">None yet: the runner opens them once Codex passes the work.</p>
-  {% endif %}
-  {% if t.branch %}<p class="note branch">Branch <code class="lit">{{ t.branch }}</code>{% if t.base_branch %} from <code class="lit">{{ t.base_branch }}</code>{% endif %}</p>{% endif %}
-</section>
-{% endif %}
-
-{% if t.reviews %}
-<section id="reviews">
-  <h2>Code reviews asked for</h2>
-  {% for r in t.reviews %}
-  <article class="card review" id="review-{{ r.n }}">
-    <h3>Review {{ r.n }} <span class="tag {{ 'busy' if r.live else 'quiet' if r.state in ('done', 'refused') else 'wait' }}">{{ r.words }}</span>{% if r.outcome %} <span class="tag {{ 'ok' if r.outcome in ('approved', 'ready') else 'bad' if r.outcome in ('changes', 'refused') else 'wait' }}">{{ r.outcome|replace("_", " ")|capitalize }}</span>{% endif %}</h3>
-    {{ fresh_marker(r.fresh) }}
-    <dl class="facts">
-      <dt>Asked by</dt><dd>{{ r.author }}{% if r.asked_at %}<span class="sub">{{ r.asked_at|when }}</span>{% endif %}</dd>
-      {% if r.started_at %}<dt>Started</dt><dd>{{ r.started_at|when }}</dd>{% endif %}
-      {% if r.live %}{{ live_rows(r.live, t.now, ago, duration) }}{% endif %}
-      {% if r.reason %}<dt>Why</dt><dd>{{ r.reason }}</dd>{% endif %}
-      <dt>Engine task</dt><dd><code class="lit">{{ r.id }}</code></dd>
-    </dl>
-  </article>
-  {% endfor %}
-</section>
-{% endif %}
 {% endblock %}

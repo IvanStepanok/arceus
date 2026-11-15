@@ -344,6 +344,35 @@ document.addEventListener('submit', function (ev) {
     var timer = setInterval(tick, every);
   });
 })();
+// A page of parts that follow the server together: data-refresh-parts="<url>" every data-every seconds. The URL
+// answers with every part ([data-part="name"]); a part is replaced only when its HTML changed, so one that did not
+// (a question still being read) keeps its text, selection and scroll. A part that comes or goes is put in or left
+// empty by the server itself. Stops while the tab is hidden, and for good once the answer carries data-final.
+(function () {
+  document.querySelectorAll('[data-refresh-parts]').forEach(function (root) {
+    var every = Math.max(3, parseInt(root.getAttribute('data-every') || '10', 10)) * 1000;
+    var timer;
+    var tick = function () {
+      if (document.hidden) return;
+      fetch(root.getAttribute('data-refresh-parts'), {credentials: 'same-origin', headers: {'Accept': 'text/html'}})
+        .then(function (r) { if (r.status === 401) { location.reload(); return null; } return r.ok ? r.text() : null; })
+        .then(function (html) {
+          if (html === null) return;
+          var fresh = document.createElement('template');
+          fresh.innerHTML = html;
+          fresh.content.querySelectorAll('[data-part]').forEach(function (part) {
+            var name = part.getAttribute('data-part');
+            var here = root.querySelector('[data-part="' + name + '"]');
+            if (!here) { root.appendChild(part); return; }
+            if (here.innerHTML.trim() !== part.innerHTML.trim()) here.replaceWith(part);
+          });
+          if (fresh.content.querySelector('[data-final]')) clearInterval(timer);
+        })
+        .catch(function () {});
+    };
+    timer = setInterval(tick, every);
+  });
+})();
 """
 
 

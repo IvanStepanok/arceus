@@ -238,11 +238,10 @@ def task(ctx: Ctx) -> Response:
 
 
 def task_live(ctx: Ctx) -> Response:
-    """The part of the task's page that follows the runner: its state, why it waits, the live figures and limits."""
+    """Every part of the task's page below its title, as it is now: the page puts in those that changed."""
     t = _gather(ctx)
-    part = ctx.query("part") if ctx.query("part") in ("head", "facts") else ""
-    html = ctx.app.templates.get_template("task_live.html").render(ctx=ctx, user=ctx.user, t=t, ago=status.ago,
-                                                                  duration=ex.duration, part=part)
+    html = ctx.app.templates.get_template("task_parts.html").render(ctx=ctx, user=ctx.user, t=t, ago=status.ago,
+                                                                   duration=ex.duration)
     return HTMLResponse(html)
 
 

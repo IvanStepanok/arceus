@@ -169,8 +169,11 @@ five minutes), or not at all yet, it says that too. A task that is over is never
 final. Figures are matched to the task by its engine task id, so another task's or a code review's are never shown
 as this one's.
 
-The state, the reason, the live figures and the limits refresh themselves every 15 seconds; the question does not, so
-reading it is never interrupted. Nothing on the page acts: answers, `/continue` and security decisions stay on the
+An open page follows the task every 15 seconds without a reload: each part (the reason, the question, the security
+hold, the live figures and limits, the merge requests, the code reviews) is put in again only when it changed. A
+question still waiting therefore stays exactly as it is while it is read; an answered one goes, the next one comes,
+and merge requests and reviews appear as the runner records them. A task that is over is still followed, since a
+`/continue` on the ticket can take it up again. Nothing on the page acts: answers, `/continue` and security decisions stay on the
 ticket, and reloading the page repeats nothing. An unknown or malformed key is not found.
 
 ## Test runs
