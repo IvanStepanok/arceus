@@ -1216,7 +1216,8 @@ def test_visual_proof_goes_to_its_mr_and_to_the_ticket(w):
     [note] = [c for c in w.yt.comments["2-1"] if "Merge request" in c["text"]]
     attached = [n.split("-", 1)[1] for n, _ in w.yt.attachments[note["id"]]]
     assert attached == ["404.png", "retry.webm", "theme.png", "odd.png"]
-    assert re.search(r"\[!\[404 page, desktop\]\((\w+-404\.png)\)\{width=480\}\]\(\1\)", note["text"])
+    # The preview is the image alone: a link around it would make the click download the file too.
+    assert re.search(r"(?<!\[)!\[404 page, desktop\]\(\w+-404\.png\)\{width=480\}(?!\]\()", note["text"])
     assert "![Theme only](" in note["text"] and "-retry.webm)\n" in note["text"]
     assert re.search(r"\[Open the screenshot: No size in its header\]\(\w+-odd\.png\)", note["text"])
     skipped = " ".join(e["detail"] for e in w.events_named("media_skipped"))

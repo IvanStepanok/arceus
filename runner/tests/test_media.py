@@ -122,12 +122,13 @@ def test_the_markdown_names_the_original_file_and_only_sizes_screenshots():
     assert mr_media_markdown(video, "/uploads/y/r.webm") == "**Caption**\n\n![Caption](/uploads/y/r.webm)"
 
     text = ticket_media_text(Tracker(), [shot, video])
-    assert f"[![Caption]({shot.upload_name}){{width=480}}]({shot.upload_name})" in text
+    assert f"![Caption]({shot.upload_name}){{width=480}}" in text
+    assert f"]({shot.upload_name})" not in text.replace(f"![Caption]({shot.upload_name})", "")  # no link around it
     assert text.endswith(f"![Caption]({video.upload_name})")
     assert shot.data() == png_header(2880, 1800)  # the file that goes out is the original
 
 
-def test_a_linked_preview_names_its_file_once_for_the_ticket_reader():
+def test_a_preview_names_its_file_once_for_the_ticket_reader():
     from urllib.parse import unquote
     from arceus_runner.materials import _REF
     from arceus_runner.youtrack import YouTrackTracker

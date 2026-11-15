@@ -342,11 +342,12 @@ class YouTrackTracker:
 
     def attachment_markdown(self, name: str, caption: str, width: int | None = None) -> str:
         # YouTrack shows a comment's own attachment in place when the text names it: images and a video player.
-        # A sized image is a preview: `{width=}` scales its height with it, and the link around it (YouTrack turns
-        # the name into the file's signed address) opens the original in one click.
+        # A sized image is a preview: `{width=}` scales its height with it, and a click opens the original in
+        # YouTrack's own viewer. No link goes around it: the name in a link becomes the file's signed address,
+        # a download, and the click then saves the file as well as opening the viewer.
         if not width:
             return f"![{caption}]({name})"
-        return f"[![{caption}]({name}){{width={width}}}]({name})"
+        return f"![{caption}]({name}){{width={width}}}"
 
     def attachment_link(self, name: str, caption: str) -> str:
         # The name is resolved the same way in a link: to the file's signed address, opened in a new tab.
