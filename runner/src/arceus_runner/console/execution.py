@@ -94,6 +94,7 @@ class Facts:
     drain_by: str = ""               # someone asked from the console to restart the engine
     review: tuple[int, str] | None = None  # a code review of this ticket under way: (n, its state)
     fixes_waiting: bool = False      # people's comments on the MRs not sent to the agent yet
+    ahead: str = ""                  # work the runner starts before a queued ticket, in words
     reason: str = ""                 # the runner's own reason (a failure, a stop)
     stop_asked: bool = False         # a run someone asked to stop
     continue_until: str = ""         # a failed task a `/continue` on the ticket still resumes until then
@@ -107,27 +108,39 @@ def reason(f: Facts) -> dict:
     state = f.state
     if state in ("queued", "run:pending", "review:pending"):
         what = "It" if state == "queued" else "The run" if state.startswith("run:") else "The review"
-        if f.mode != "live" and state != "review:pending":
+        # The runner's own gates, in its order (delivery.maybe_start, code_review, workspace_run.start).
+        if f.mode != "live":
             return r("observe", "wait", "Queued, but the runner takes no work",
                      f"The runner is in mode: {f.mode}. {what} starts once it is live.")
         if f.drain_by:
             return r("drain", "wait", "Queued: new work is held for an engine restart",
                      f"{f.drain_by} asked from the console to restart the engine once its tasks end. {what} starts "
                      "after that.")
-        if f.can_take is False and state == "queued":
+        if f.can_take is False:
             return r("health", "wait", "Queued, held by a failing health check",
-                     "The runner takes no new work while a check fails. Home says which one and why.")
+                     "The runner starts no new work while a check fails or a service does not answer. Home says "
+                     "which one and why.")
         if f.holder:
             return r("workspace", "wait", "Queued for the workspace",
                      f"{f.holder} has the shared workspace. {what} starts once it is free.")
+        if f.ahead:
+            return r("behind", "wait", "Queued behind other work",
+                     f"{f.ahead} goes first. {what} starts after it.")
         return r("next_pass", "busy", "Queued", f"{what} starts on the runner's next pass.")
 
     if state in ("dispatched", "review:running", "run:running"):
-        if f.used_up:
+        if f.used_up and state == "dispatched":
+            # The runner pauses a task's attempt while any window is used up (delivery._check_timeout).
             return r("subscription", "wait", "Paused: a subscription limit is used up",
                      f"Used up: {'; '.join(f.used_up)}. The limit is shared by all the factory's work, not spent by "
                      "this one alone. It goes on by itself when the window resets, and the attempt's clock stands "
                      "still meanwhile. Nothing to answer.")
+        if f.used_up and f.turn == "paused":
+            # A code review or a run has no such pause of its own: only the engine's step says it waits.
+            return r("subscription", "wait", "Paused: a subscription limit is used up",
+                     f"The engine waits, and {'; '.join(f.used_up)} is used up: shared by all the factory's work, "
+                     "not spent by this one alone. It goes on by itself; its time limit keeps running. Nothing to "
+                     "answer.")
         if f.turn == "paused":
             return r("engine_wait", "wait", "Paused by the engine",
                      "The engine holds this step and goes on by itself. Nothing to answer.")
@@ -156,7 +169,8 @@ def reason(f: Facts) -> dict:
         if f.review:
             n, rstate = f.review
             if rstate == "pending":
-                inner = reason(Facts(state="review:pending", holder=f.holder, drain_by=f.drain_by, mode=f.mode))
+                inner = reason(Facts(state="review:pending", holder=f.holder, drain_by=f.drain_by, mode=f.mode,
+                                     can_take=f.can_take))
                 return {**inner, "title": f"Code review {n}: {inner['title'].lower()}"}
             if rstate == "running":
                 inner = reason(Facts(state="review:running", turn=f.turn, used_up=f.used_up))
@@ -255,7 +269,7 @@ def question(task) -> dict | None:
     if not isinstance(q, dict) or q.get("id") != task.question_id:
         return None
     text = q.get("text") if isinstance(q.get("text"), str) else ""
-    options = [o for o in (q.get("options") or []) if isinstance(o, str)]
+    options = [o for o in q.get("options") or [] if isinstance(o, str)] if isinstance(q.get("options"), list) else []
     return {"text": text, "options": options, "blocked": bool(q.get("blocked")), "unreadable": False,
             # Kept before questions were kept whole: the ticket has the rest.
             "cut": len(text) == OLD_QUESTION_CUT + 1 and text.endswith("…")}

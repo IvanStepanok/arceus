@@ -137,6 +137,7 @@ def run_view(cfg: Config, kind: str, n: int, now: float | None = None) -> dict |
         facts = ex.Facts(state=f"run:{run.state}", turn=(view or {}).get("turn", ""),
                          used_up=ex.used_up(m, cfg.schedule.tz) if running else [],
                          holder="" if run.state in RUN_HOLDS else holder, mode=m.mode or cfg.mode,
+                         can_take=m.can_take,
                          drain_by=ex.drain_by(store), reason=run.reason or "", stop_asked=bool(run.stop_requested))
         why = ex.reason(facts)
         if run.state == "done":

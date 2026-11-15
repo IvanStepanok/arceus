@@ -99,9 +99,10 @@ def _mrs(store: ReviewStore, task) -> list[dict]:
              "iid": m.iid} for m in store.task_mrs(task.task_id)]
     if not rows:  # a task from before the MRs were kept per repository, or one whose records were dropped
         try:
-            urls = [u for u in json.loads(task.mr_urls or "[]") if isinstance(u, str)]
+            urls = json.loads(task.mr_urls or "[]")
         except ValueError:
             urls = []
+        urls = [u for u in urls if isinstance(u, str)] if isinstance(urls, list) else []
         rows = [{"repo": "", "url": u, "state": "", "sha": "", "iid": ""} for u in urls]
     return rows
 
@@ -114,9 +115,10 @@ def _hold(store: ReviewStore, task_id: str) -> dict | None:
         return None
     screening = store.screening(row["digest"])
     try:
-        categories = [c for c in json.loads(screening["categories"]) if isinstance(c, str)] if screening else []
+        categories = json.loads(screening["categories"]) if screening else []
     except ValueError:
         categories = []
+    categories = [c for c in categories if isinstance(c, str)] if isinstance(categories, list) else []
     return {"kind": row["kind"], "code": row["digest"][:12], "held_at": row["held_at"], "categories": categories,
             "verdict": screening["verdict"] if screening else ""}
 
@@ -130,6 +132,22 @@ def _continue_until(cfg: Config, task) -> str:
     if until <= time.time():
         return ""
     return f"{datetime.fromtimestamp(until, cfg.schedule.tz):%d %b %Y, %H:%M}"
+
+
+def _ahead(store: ReviewStore) -> str:
+    """What the runner starts before a queued ticket (delivery.maybe_start): people's comments for an open MR, a
+    `/continue`, a code review or a test run or architecture review waiting."""
+    if store.has_pending_review():
+        return "Review comments for an open merge request"
+    if store.pending_continues():
+        return "A /continue on another ticket"
+    review = next(iter(store.reviews("pending")), None)
+    if review:
+        return f"Code review {review.n} of {review.task_id}"
+    run = next(iter(store.runs(None, "pending")), None)
+    if run:
+        return f"{status.RUN_WORDS[run.kind][0]}, run {run.n}"
+    return ""
 
 
 def gather(cfg: Config, key: str, config_path, now: float | None = None) -> dict | None:
@@ -152,7 +170,10 @@ def gather(cfg: Config, key: str, config_path, now: float | None = None) -> dict
         under_way = next((r for r in reviews if r.state in REVIEW_UNDER_WAY), None)
 
         # A ticket whose merge requests the runner only reviewed is queued for the agent once tagged: it is not taken.
-        taken = task is not None and not (queued and task.kind == "review" and task.state != "security_hold")
+        # The runner takes it over only once no review of it runs or waits and nothing holds it (delivery.start);
+        # until then it is where its review has it.
+        taken = task is not None and not (queued and task.kind == "review" and task.state != "security_hold"
+                                          and under_way is None)
         state = task.state if taken else "queued"
         running = state == "dispatched"
         view = ex.live(m, key, now, stale_after) if running else None
@@ -167,6 +188,7 @@ def gather(cfg: Config, key: str, config_path, now: float | None = None) -> dict
             holder="" if holder == key else holder, can_take=m.can_take, mode=mode, drain_by=drain,
             review=(under_way.n, under_way.state) if under_way and state == "code_review" else None,
             fixes_waiting=taken and state == "code_review" and ex.fixes_waiting(store, key),
+            ahead=_ahead(store) if state == "queued" else "",
             reason=(task.reason or "") if taken else "",
             continue_until=_continue_until(cfg, task) if taken else "")
         why = ex.reason(facts)

@@ -132,13 +132,16 @@ included (before the runner has a record of the task), and shows:
 
 - **Why it is where it is**, as one of a fixed set of reasons, each in its own words: queued for the next pass, for
   the shared workspace (and what has it), held by a failing health check, by an engine restart asked from the
-  console or by mode `observe`; the agent working, the gate, the verifier or Codex checking, the engine pausing a step,
+  console or by mode `observe`, behind work the runner starts first (review comments for an open merge request, a
+  `/continue`, a code review or a run waiting); the same for a code review or a run that waits to start; the agent
+  working, the gate, the verifier or Codex checking, the engine pausing a step,
   a subscription window used up; opening merge requests; waiting for an answer or a decision on the ticket; held by
   the security screen; waiting for people to review and merge, review comments on their way to the agent, a code
   review queued or running; failed (with the runner's reason, and until when a `/continue` on the ticket resumes it),
   stopped, done. Only a wait for an answer asks for a comment on the ticket. A used-up subscription window is said
   to be the whole factory's, never this task's spend, and usage that is high but not used up does not make a task
-  wait.
+  wait. Only a development attempt is said to stop its clock while a window is used up; a code review or a run is
+  said to wait for one only when the engine's step waits, and its time limit keeps running.
 - **The agent's question**, whole, with its options, beside a link to the ticket where it is answered. The runner
   keeps the question as the ticket got it; a question kept before it did so (its first 1500 characters) says the
   ticket has the rest. Only the question the task waits on now is shown, never an earlier one's words.

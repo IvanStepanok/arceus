@@ -173,6 +173,10 @@ REASONS = [
     (ex.Facts(state="code_review", review=(2, "pending"), holder="qa-1"), "workspace"),
     (ex.Facts(state="code_review", review=(2, "running"), turn="agent"), "working"),
     (ex.Facts(state="code_review", kind="review"), "review_idle"),
+    (ex.Facts(state="queued", ahead="Code review 1 of ACME-3"), "behind"),
+    (ex.Facts(state="code_review", review=(1, "pending"), can_take=False), "health"),
+    (ex.Facts(state="code_review", review=(1, "pending"), mode="observe"), "observe"),
+    (ex.Facts(state="run:pending", can_take=False), "health"),
     (ex.Facts(state="failed", reason="the agent hung"), "failed"),
     (ex.Facts(state="stopped"), "stopped"),
     (ex.Facts(state="done"), "done"),
@@ -188,6 +192,17 @@ def test_each_reason_has_its_own_words_and_only_a_person_is_asked_to_answer(fact
         assert "comment on the ticket" in words
     else:
         assert "answer on the ticket" not in words and "comment on the ticket" not in words
+
+
+def test_only_a_development_attempt_is_said_to_stop_its_clock_for_a_used_up_subscription():
+    task_ = ex.reason(ex.Facts(state="dispatched", turn="agent", used_up=["Claude's 5-hour window"]))
+    assert task_["code"] == "subscription" and "clock stands still" in task_["detail"]
+    # A run or a code review keeps its wall-clock limit, and a used-up window alone does not say its step waits.
+    for state in ("run:running", "review:running"):
+        assert ex.reason(ex.Facts(state=state, turn="agent", used_up=["Claude's 5-hour window"]))["code"] == "working"
+        paused = ex.reason(ex.Facts(state=state, turn="paused", used_up=["Claude's 5-hour window"]))
+        assert paused["code"] == "subscription" and "clock stands still" not in paused["detail"]
+        assert "time limit keeps running" in paused["detail"]
 
 
 def test_no_two_reasons_say_the_same():
@@ -449,3 +464,37 @@ def test_every_task_and_run_link_on_home_and_the_lists_opens(w):
         if link.endswith(("instructions/", "findings/")):
             continue
         assert c.get(link).status_code == 200, link
+
+
+def test_a_reviewed_ticket_tagged_for_the_agent_stays_with_its_review_until_that_settles(w):
+    task(w.store, "ACME-3", "code_review", kind="review")
+    w.store.add_review("ACME-3", "c-1", "ivan", 1, "")  # pending: the runner does not take the ticket over yet
+    w.store.record_trigger("ACME-3", "tag-3", "ivan", True, 1)
+    html = page(w, "/tasks/ACME-3/")
+    assert "Code review 1:" in html and 'data-reason="next_pass"' in html  # the review's own wait, not the ticket's
+    assert "Code review 1: queued" in html
+    w.store.update_review("ACME-3.review-1", state="done", outcome="approved")
+    assert "<p class=\"headline busy\" data-reason=\"next_pass\"" in page(w, "/tasks/ACME-3/")
+
+
+def test_a_queued_ticket_names_the_work_that_goes_first(w):
+    w.store.record_trigger("ACME-20", "tag-1", "ivan", True, 1)
+    w.store.add_run("qa", "command", "q@example.com")
+    html = page(w, "/tasks/ACME-20/")
+    assert 'data-reason="behind"' in html and "Platform test, run 1 goes first" in html
+
+
+@pytest.mark.parametrize("field,value", [("question", '{"id": "q-1", "text": "Which?", "options": 1}'),
+                                         ("question", '{"id": "q-1", "text": 5, "options": null}'),
+                                         ("question", "not json"), ("mr_urls", "null"), ("mr_urls", '{"a": 1}')])
+def test_odd_records_do_not_break_the_page(w, field, value):
+    task(w.store, "ACME-7", "needs_input", question_id="q-1", **{field: value})
+    page(w, "/tasks/ACME-7/")
+
+
+def test_odd_screening_categories_do_not_break_the_page(w):
+    task(w.store, "ACME-2", "security_hold")
+    w.store.save_screening("d" * 64, "ACME-2", "comment", "review", [], "", "m", "p1", "2026-11-15T08:00:00Z")
+    w.store.conn.execute("UPDATE screenings SET categories = 'null'")
+    w.store.open_hold("ACME-2", "d" * 64, "comment", "[]", "code_review", None, "2026-11-15T08:00:00Z")
+    assert "dddddddddddd" in page(w, "/tasks/ACME-2/")
