@@ -99,16 +99,21 @@ def read_record(path: Path) -> Advisory | None:
     """The OSV record in `path` as an advisory, None when it is withdrawn; ValueError when it is not a usable one."""
     if path.stat().st_size > MAX_BYTES:
         raise ValueError(f"larger than {MAX_BYTES // 1024} KB")
+
     rec = json.loads(path.read_bytes())
     if not isinstance(rec, dict):
         raise ValueError("not a JSON object")
+
     rid, modified = rec.get("id"), rec.get("modified")
     if not isinstance(rid, str) or not OSV_ID.match(rid):
         raise ValueError("no usable `id`")
+
     if not isinstance(modified, str) or not modified:
         raise ValueError("no `modified`")
+
     if rec.get("withdrawn"):
         return None
+
     affected, refs = _dicts(rec.get("affected")), _dicts(rec.get("references"))
     blocks = [rec, *affected]  # severity is the record's, or each package's
     scores = [f"{s['type']} {s['score']}" for b in blocks for s in _dicts(b.get("severity"))
@@ -124,6 +129,7 @@ def read_record(path: Path) -> Advisory | None:
     facts = {"aliases": aliases, "severity": _capped(scores + words), "affected": packages, "fixed": _capped(fixed),
              "references": _capped([_words(r.get("type"), r["url"]) for r in links])}
     summary, details = rec.get("summary"), rec.get("details")
+
     return Advisory(id=rid, ref=rid, title=summary[:300] if isinstance(summary, str) else "",
                     text=details if isinstance(details, str) else "", facts=_compact(facts),
                     identifiers=aliases, severity=words[0].strip().lower()[:20] if words else "", changed=modified,
@@ -145,8 +151,10 @@ class FilesRegister:
             files = sorted(p for p in folder.iterdir() if p.suffix == ".json")
         except OSError as err:
             raise ServiceError(NAME, f"the advisories folder {folder} cannot be read ({err.strerror or err})") from None
+
         if len(files) > MAX_RECORDS:
             raise ServiceError(NAME, f"{folder} holds {len(files)} records, more than the {MAX_RECORDS} it reads")
+
         found: dict[Id, Advisory] = {}
         for path in files:
             try:
@@ -157,6 +165,7 @@ class FilesRegister:
                              problem=f"{path.name} is not a usable OSV record ({why})")
             if a is not None and (a.id not in found or a.changed > found[a.id].changed):
                 found[a.id] = a  # OSV: of two records with one id, the later `modified` holds
+
         return list(found.values())
 
     def _document(self) -> dict:
@@ -169,10 +178,12 @@ class FilesRegister:
                     "timestamp": "", "version": 0, "statements": []}
         except (OSError, ValueError, RecursionError) as err:
             raise ServiceError(NAME, f"the verdicts document {path} cannot be read ({type(err).__name__})") from None
+
         if not (isinstance(doc, dict) and doc.get("@context") == CONTEXT and isinstance(doc.get("@id"), str)
                 and isinstance(doc.get("timestamp"), str) and type(doc.get("version")) is int
                 and isinstance(doc.get("statements"), list) and all(isinstance(s, dict) for s in doc["statements"])):
             raise ServiceError(NAME, f"the verdicts document {path} is not an OpenVEX v0.2.0 document")
+
         return doc
 
     def send(self, advisory: Advisory, repo: RepoAt, verdict: str, evidence: str) -> None:
@@ -181,6 +192,7 @@ class FilesRegister:
         statement = {"vulnerability": _compact({"name": str(advisory.id), "aliases": advisory.identifiers}),
                      "timestamp": now, "products": [{"@id": repo.url}], "status": STATUS[verdict],
                      "status_notes": f"Read at commit {repo.commit} of {repo.path}.\n\n{evidence}"}
+
         if verdict == "not_affected":  # the specification wants a justification or this
             statement["impact_statement"] = evidence
         elif verdict == "affected":  # and here what to do about it
@@ -189,6 +201,7 @@ class FilesRegister:
                                              f"advisory names no fixed version: see {advisory.url or advisory.ref}.")
         for s in doc["statements"]:
             s.setdefault("timestamp", doc["timestamp"])  # what a statement inherited stays its own (OpenVEX: updating)
+
         doc["statements"].append(statement)
         doc.update(author=self.cfg.author, timestamp=now, last_updated=now, version=doc["version"] + 1,
                    tooling=TOOLING)
@@ -200,12 +213,19 @@ class FilesRegister:
 
     def latest(self, advisory: Id, repo: RepoAt) -> tuple[str, str] | None:
         last = None
+
         for s in self._document()["statements"]:
             v, status = s.get("vulnerability"), s.get("status")
-            if (isinstance(v, dict) and v.get("name") == str(advisory) and isinstance(status, str) and status in WORD
-                    and any(p.get("@id") == repo.url for p in _dicts(s.get("products")))):
+            if (
+                isinstance(v, dict) and
+                v.get("name") == str(advisory) and
+                isinstance(status, str) and
+                status in WORD and
+                any(p.get("@id") == repo.url for p in _dicts(s.get("products")))
+            ):
                 notes = s.get("status_notes")
                 last = (WORD[status], notes.partition("\n\n")[2] if isinstance(notes, str) else "")
+
         return last
 
     def check(self, scope: str, post: bool) -> list[Check]:

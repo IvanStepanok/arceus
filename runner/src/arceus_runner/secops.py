@@ -129,15 +129,19 @@ def _load_verdicts(folder: Path, names: dict[Id, str], scope: set[str], limit: i
     path = folder / VERDICTS
     if folder.is_symlink() or not path.is_file() or path.is_symlink():
         return {}, ["the agent wrote no verdicts file"]
+
     size = path.stat().st_size
     if size > MAX_FILE_BYTES:
         return {}, [f"the verdicts file is larger than {MAX_FILE_BYTES // 1024} KB"]
+
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as err:
         return {}, [f"the verdicts file is not JSON ({type(err).__name__})"]
+
     if not isinstance(data, dict):
         return {}, ["the verdicts file is not a JSON object"]
+
     problems = [f"{VERDICTS} is {size} bytes, more than the {ENGINE_READS} its closing review reads, so its end was "
                 "not reviewed"] if size > ENGINE_READS else []
 
@@ -145,6 +149,7 @@ def _load_verdicts(folder: Path, names: dict[Id, str], scope: set[str], limit: i
         value = data.get(key)
         if value is not None and not isinstance(value, list):
             problems.append(f"`{key}` is not a list, so what the agent said there is not known")
+
         value = value if isinstance(value, list) else []
         if len(value) > MAX_ENTRIES:
             problems.append(f"`{key}` has {len(value)} entries; the first {MAX_ENTRIES} are read")
@@ -158,6 +163,7 @@ def _load_verdicts(folder: Path, names: dict[Id, str], scope: set[str], limit: i
                             "was given")
             continue
         checked[a] = {"advisory": a, "note": clean_text(c.get("note"), 600)}
+
     verdicts, seen = [], set()
     for v in entries("verdicts"):
         v = v if isinstance(v, dict) else {}
@@ -172,14 +178,19 @@ def _load_verdicts(folder: Path, names: dict[Id, str], scope: set[str], limit: i
             problems.append(f"the verdict on {names[a] if a in names else json.dumps(a)} in {repo or 'no repository'} "
                             f"is left out: {why}")
             continue
+
         seen.add((a, repo))
         where = [{"repo": clean_text(c.get("repo"), 200) or repo, "file": clean_text(c.get("file"), 300),
                   "line": count(c.get("line")) or None}
                  for c in (v.get("where") if isinstance(v.get("where"), list) else [])[:MAX_REFS]
                  if isinstance(c, dict) and clean_text(c.get("file"), 300)]
         verdicts.append({"advisory": a, "repo": repo, "verdict": word, "evidence": evidence, "where": where})
-    return {"summary": clean_text(data.get("summary"), 1500), "checked": list(checked.values()),
-            "verdicts": verdicts}, list(dict.fromkeys(problems))
+
+    return {
+        "summary": clean_text(data.get("summary"), 1500),
+        "checked": list(checked.values()),
+        "verdicts": verdicts
+    }, list(dict.fromkeys(problems))
 
 
 def outcome_of(found: dict, problems: list[str], fatal: list[str], stopped: bool,
@@ -191,14 +202,17 @@ def outcome_of(found: dict, problems: list[str], fatal: list[str], stopped: bool
         return "unfinished", []
     if not found.get("checked") and not found.get("verdicts"):
         return "unfinished", ["the agent did not say what it checked"]
+
     gaps = len(found.get("unaccounted") or [])
     doubts = [*([f"{gaps} advisor{'ies' if gaps != 1 else 'y'} the agent did not account for"] if gaps else []),
               *([f"{left_out} advisor{'ies' if left_out != 1 else 'y'} left out before the triage"]
                 if left_out else []),
               *(["part of the agent's report was left out"] if problems else []),
               *(["the report did not pass its closing review"] if found.get("engine_disputed") else [])]
+
     if any(v["verdict"] in ATTENTION for v in found["verdicts"]):
         return "attention", doubts
+
     return ("partial" if doubts else "clear"), doubts
 
 
@@ -245,6 +259,7 @@ class SecOpsAgent(WorkspaceRun):
                                          f"({self._said(str(err))})")
         if not listed:
             return extra, ("none_open", "the advisory register has no open advisory")
+
         earlier = self._earlier(run)
         for a in listed:
             entry = {"id": a.id, "ref": a.ref, "title": a.title, "facts": a.facts, "text": a.text or ""}
@@ -259,6 +274,7 @@ class SecOpsAgent(WorkspaceRun):
                 extra["left_out"].append({"id": a.id, "why": why})
             else:
                 extra["given"].append({**entry, "earlier": earlier.get(a.id, [])})
+
         if not extra["given"]:
             n = len(listed)
             return extra, ("unfinished", f"nothing was checked: the security screen cleared none of the {n} open "
@@ -273,9 +289,11 @@ class SecOpsAgent(WorkspaceRun):
         else:
             last = next((r for r in reversed(self.store.runs(self.KIND, "done")) if r.outcome in COMPLETE), None)
             rows = json.loads(last.result or "{}").get("verdicts") or [] if last else []
+
         out: dict[Id, list[dict]] = {}
         for r in rows:
             out.setdefault(r["advisory"], []).append({k: r[k] for k in ("repo", "verdict", "evidence")})
+
         return out
 
     # -- the brief ------------------------------------------------------------------------------------------------
@@ -311,6 +329,7 @@ class SecOpsAgent(WorkspaceRun):
                  "",
                  "## The code", "",
                  "Give verdicts only for these repositories, each read at the commit given:", ""]
+
         by_repo = {r["repo"]: r for r in repos}
         for name in extra["scope"]:
             r = by_repo[name]
@@ -318,9 +337,11 @@ class SecOpsAgent(WorkspaceRun):
                 f"has other work checked out: read {r['default']} with `git -C {ws / name} show {r['sha']}:<path>` "
                 f"and `git grep <text> {r['sha']}`")
             lines.append(f"- `{name}` ({r['default']}): {how}.")
+
         if self.c.skip:
             lines += ["", "Never check, and cite no code from: " + ", ".join(f"`{p}`" for p in self.c.skip)
                       + " (`repo` or `repo:path` patterns)."]
+
         language = extra["language"] or "the language the team's notes below are written in"
         lines += ["", "## How to judge", "",
                   "For each advisory, find the repositories that carry its product or component: they ship it, pin "
@@ -354,8 +375,10 @@ class SecOpsAgent(WorkspaceRun):
                   f"{self.REPORT_ROUNDS} rounds; answer each by correcting `{VERDICTS}` and finish again the same way. "
                   f"It reads `{VERDICTS}` as `{review}`, a link the runner made: do not write that file, and put no "
                   "other report in `artifacts/`. It judges by this:", "", REPORT_CRITERIA]
+
         if instructions.strip():
             lines += ["", "## The team's notes on its stack", "", instructions.strip()]
+
         return "\n".join(lines)
 
     def _dispatch(self, run: AgentRun) -> None:
@@ -379,11 +402,13 @@ class SecOpsAgent(WorkspaceRun):
                                              lambda v: f"the verdict on {names[v['advisory']]} in {v['repo']}",
                                              lambda v: v["verdict"] == "needs_review")
         found["unaccounted"] = [a for a in names if a not in {c["advisory"] for c in found["checked"]}]
+
         return found, problems
 
     def _outcome(self, run: AgentRun, found: dict, problems: list[str], fatal: list[str],
                  stopped: bool) -> tuple[str, list[str]]:
         left_out = json.loads(run.snapshot or "{}").get("left_out") or []
+
         return outcome_of(found, problems, fatal, stopped, len(left_out))
 
     # -- what is sent ---------------------------------------------------------------------------------------------
@@ -394,13 +419,16 @@ class SecOpsAgent(WorkspaceRun):
         is tried again on the next pass, for SEND_FOR after it settled; then the report goes out saying so."""
         result = json.loads(run.result or "{}")
         snap = json.loads(run.snapshot or "{}")
+
         if not result.get("verdicts"):
             return
+
         why = ("secops.post is off: the verdicts stay in this report" if not snap.get("post") else
                "the run did not finish" if run.outcome not in COMPLETE else
                "the report did not pass its closing review" if result.get("engine_disputed") else
                "advisory triage was switched off before they were sent" if self.register is None else
                "the register takes no verdicts (secops.register is read-only)" if not self.register.receives else None)
+
         if why is None:
             try:
                 self._send(run, result["verdicts"], snap)
@@ -409,6 +437,7 @@ class SecOpsAgent(WorkspaceRun):
                     raise
                 why = (f"the register did not take them within {SEND_FOR.total_seconds() / 3600:g} h "
                        f"({self._said(str(err))})")
+
         rows = self.store.advisory_verdicts(run.n)
         states = [rows[v["advisory"], v["repo"]]["state"] if (v["advisory"], v["repo"]) in rows else "unsent"
                   for v in result["verdicts"]]
@@ -421,6 +450,7 @@ class SecOpsAgent(WorkspaceRun):
         advisories = {a["id"]: Advisory(**a, text=None) for a in snap["advisories"]}
         repos = {r["repo"]: RepoAt(r["repo"], self.d.host.scope, r["http_url"], r["sha"]) for r in snap["repos"]}
         mine, last = self.store.advisory_verdicts(run.n), self.store.last_sent(run.n)
+
         for v in verdicts:
             pair, a, repo = (v["advisory"], v["repo"]), advisories[v["advisory"]], repos[v["repo"]]
             row = mine.get(pair)
@@ -465,9 +495,12 @@ class SecOpsAgent(WorkspaceRun):
         and how it went to the register."""
         snap, result = json.loads(run.snapshot or "{}"), json.loads(run.result or "{}")
         verdicts = result.get("verdicts") or []
+
         link_code([c for v in verdicts for c in v["where"]], snap, self.d.host)
+
         rows = self.store.advisory_verdicts(run.n)
         by: dict[Id, list[dict]] = {}
+
         for v in verdicts:  # why one was not sent is said once, above them (`sending`)
             row = rows.get((v["advisory"], v["repo"]))
             v["sent"] = "Not sent" if row is None else {
@@ -476,11 +509,13 @@ class SecOpsAgent(WorkspaceRun):
                 "refused": f"Refused by the register: {row['answer']}",
                 "sending": "Not known to have reached the register"}[row["state"]]
             by.setdefault(v["advisory"], []).append(v)
+
         notes = {c["advisory"]: c["note"] for c in result.get("checked") or []}
         left = {x["id"]: x["why"] for x in snap.get("left_out") or []}
         advisories = [{**a, "note": notes.get(a["id"]), "left_out": left.get(a["id"]), "verdicts": by.get(a["id"], []),
                        "unaccounted": a["id"] in (result.get("unaccounted") or [])}
                       for a in snap.get("advisories") or []]
+
         return {**super().view(run, finished), "advisories": advisories, "register": snap.get("register"),
                 **{k: result.get(k) for k in ("summary", "sending", "engine_disputed", "engine_review")}}
 
@@ -521,6 +556,7 @@ def _advisory(a: dict) -> str:
              f'<p class="meta">{e(", ".join(a["identifiers"][:10]))}</p>' if a.get("identifiers") else "",
              f"<p>{rich(said)}</p>" if said else ""]
     items = []
+
     for v in a["verdicts"]:
         refs = [(f"<code>{e(c['repo'])}/{e(c['file'])}{':' + e(c['line']) if c.get('line') else ''}</code>"
                  + (f" at <code>{e(c['sha'][:12])}</code>" if c.get("sha") else "")) for c in v["where"]]
@@ -530,6 +566,7 @@ def _advisory(a: dict) -> str:
                      f'{rich(v["evidence"])}<span class="note">{" · ".join([*refs, e(v["sent"])])}</span></span></li>')
     if items:
         parts.append(f'<ul class="checks">{"".join(items)}</ul>')
+
     return "\n".join([*filter(None, parts), "</article>"])
 
 
@@ -551,27 +588,34 @@ def render_run(view: dict, project: str, tz: ZoneInfo) -> str:
             f"<h1>Advisory triage, run {e(view['n'])}</h1>",
             f'<p class="verdict {OUTCOME_CLASS.get(outcome or "", e(outcome))}">{e(head_of(outcome, attention))}</p>',
             '<dl class="facts">' + "".join(f"<dt>{e(k)}</dt><dd>{e(v)}</dd>" for k, v in facts if v) + "</dl>"]
+
     if view.get("summary"):
         body.append(f'<p class="summary">{rich(view["summary"])}</p>')
+
     for title, items, cls in (("The run did not finish as it should.", view.get("fatal"), "alert"),
                               ("Not a clean result:", view.get("doubts"), "alert note"),
                               ("Not sent:", [s["why"]] if s.get("why") else [], "alert note")):
         if items:
             body.append(f'<div class="{cls}"><p><strong>{title}</strong></p><ul>'
                         + "".join(f"<li>{e(x)}</li>" for x in items) + "</ul></div>")
+
     if view.get("engine_review"):
         body.append('<div class="alert note"><p><strong>The report as a whole did not pass its closing review.'
                     f'</strong> These objections were not settled:</p><p class="objections">'
                     f'{rich(view["engine_review"])}</p></div>')
     body.append("<h2>Advisories</h2>")
     body += [_advisory(a) for a in advisories] or ['<p class="empty">None read from the register.</p>']
+
     if view.get("problems"):
         body.append('<div class="alert note"><p><strong>Left out of this report</strong> (the agent\'s report did not '
                     'hold up there):</p><ul>' + "".join(f"<li>{e(p)}</li>" for p in view["problems"]) + "</ul></div>")
+
     repos = [f"<li><code>{e(r['repo'])}</code> {e(r['default'])} at <code>{e(r['sha'][:12])}</code></li>"
              for r in view.get("repos") or [] if r.get("sha")]
+
     if repos:
         body.append("<footer><p>Code at the commits read:</p><ul>" + "".join(repos) + "</ul></footer>")
+
     return _page(f"Run {view['n']}: {head_of(outcome, attention)}", "\n".join(body))
 
 
@@ -605,6 +649,7 @@ def render_index(rows: list[dict], project: str, tz: ZoneInfo) -> str:
             f'<th class="hide-narrow">How</th></tr></thead><tbody>{"".join(trs)}</tbody></table>' if trs else
             '<p class="empty">No triage runs yet. Start one on the server with <code>arceus-runner secops run</code>.'
             '</p>')
+
     return _page(title, f"<h1>{e(title)}</h1>\n{body}")
 
 
@@ -628,12 +673,16 @@ def check(cfg) -> list[Check]:
     a = cfg.secops
     if not a.enabled:
         return [Check("config.secops", "ok", "off")]
+
     when = (f"`arceus-runner secops run`, and {', '.join(a.schedule.days)} at {a.schedule.at:%H:%M} "
             f"({cfg.schedule.timezone})") if a.schedule else "`arceus-runner secops run` only"
     text, why = read_instructions(a.instructions, required=False)
+
     if text is None:
         return [Check("config.secops", "fail", f"on ({when}), but {why}: a run would only report that")]
+
     told = f"notes {a.instructions}" if text else "no notes written"
+
     return [Check("config.secops", "ok", f"on ({when}); {told}; register {a.register_section.type}; verdicts "
                   f"{'sent to the register' if a.post else 'kept in the reports (post: false)'}; reports on "
                   f"http://{a.address}:{a.port}/")]
