@@ -14,7 +14,7 @@ from arceus_runner.config import Config
 from arceus_runner.console import execution as ex
 from arceus_runner.console import files, status
 from arceus_runner.console.store import ConsoleError, User, parse_iso
-from arceus_runner.console.web import Ctx, Denied
+from arceus_runner.console.web import Ctx, Denied, as_number
 from arceus_runner.db import RUN_HOLDS, RUN_UNDER_WAY, AgentRun, ReviewStore
 from arceus_runner.workspace_run import MAX_INSTRUCTIONS, read_instructions
 
@@ -105,8 +105,8 @@ def file_page(ctx: Ctx, *, kind: str, action: str, path: Path, title: str, lede:
                 error = (f"Not saved: {path} is outside the data folder, which the console sees read-only. Edit it "
                          "on the server, or keep it in the data folder.")
     restoring = None
-    if ctx.request.method == "GET" and ctx.query("version").isdigit():
-        restoring = ctx.store.version_of(kind, int(ctx.query("version")))
+    if ctx.request.method == "GET" and (n := as_number(ctx.query("version"))) is not None:
+        restoring = ctx.store.version_of(kind, n)
         if restoring:
             text = restoring["after_text"]
     agent_gets, why = read_instructions(path, required=required)

@@ -37,11 +37,7 @@ def people(ctx: Ctx) -> Response:
 
 def person(ctx: Ctx) -> Response:
     admin = ctx.require("users.manage")
-    try:
-        user_id = int(ctx.param("id"))
-    except ValueError:
-        raise Gone() from None
-    user = ctx.store.user(user_id)
+    user = ctx.store.user(ctx.number("id"))
     if user is None:
         raise Gone()
     error, made = "", None

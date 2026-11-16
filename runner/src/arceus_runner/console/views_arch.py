@@ -72,17 +72,15 @@ def index(ctx: Ctx) -> Response:
 
 
 def report(ctx: Ctx) -> Response:
-    value = ctx.param("n")
-    if not value.isdigit() or len(value) > 9:
-        raise Gone()
+    n = ctx.number("n")
     cfg = _cfg(ctx)
     store = _read(cfg)
     try:
-        run = store.run(f"arch-{int(value)}")
+        run = store.run(f"arch-{n}")
         if run is None:
             raise Gone()
         if run.state != "done":  # queued or under way: where it is, until the report is written
-            status = runs.run_view(cfg, "arch", int(value))
+            status = runs.run_view(cfg, "arch", n)
             if status is None:
                 raise Gone()
             return runs.status_page(ctx, status)
@@ -97,10 +95,8 @@ def report(ctx: Ctx) -> Response:
 
 
 def live(ctx: Ctx) -> Response:
-    value = ctx.param("n")
-    if not value.isdigit() or len(value) > 9:
-        raise Gone()
-    view = runs.run_view(_cfg(ctx), "arch", int(value))
+    n = ctx.number("n")
+    view = runs.run_view(_cfg(ctx), "arch", n)
     if view is None:
         raise Gone()
     view["report_ready"] = view["state"] == "done"  # an architecture review's report is built from runner.db
@@ -120,10 +116,7 @@ def findings(ctx: Ctx) -> Response:
 
 def decide(ctx: Ctx) -> Response:
     user = ctx.require("arch.decide")
-    value = ctx.param("n")
-    if not value.isdigit() or len(value) > 9:
-        raise Gone()
-    n = int(value)
+    n = ctx.number("n")
     cfg = _cfg(ctx)
     decision, note = ctx.field("decision"), ctx.field("note").strip()[:arch_report.MAX_NOTE]
     back = ctx.field("back")
@@ -151,15 +144,13 @@ def decide(ctx: Ctx) -> Response:
 
 def stop(ctx: Ctx) -> Response:
     user = ctx.require("arch.run")
-    value = ctx.param("n")
-    if not value.isdigit() or len(value) > 9:
-        raise Gone()
+    n = ctx.number("n")
     try:
-        runs.stop(_cfg(ctx), "arch", int(value))
+        runs.stop(_cfg(ctx), "arch", n)
     except ConsoleError as e:
         return ctx.redirect("/architecture/", str(e))
-    ctx.store.log(user, user.label, "arch_run_stop_asked", f"arch-{value}")
-    return ctx.redirect("/architecture/", f"Review {value}: asked to stop. The runner stops it on its next pass.")
+    ctx.store.log(user, user.label, "arch_run_stop_asked", f"arch-{n}")
+    return ctx.redirect("/architecture/", f"Review {n}: asked to stop. The runner stops it on its next pass.")
 
 
 def instructions(ctx: Ctx) -> Response:

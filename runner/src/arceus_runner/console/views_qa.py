@@ -30,10 +30,7 @@ def _cfg(ctx: Ctx):
 
 
 def _n(ctx: Ctx) -> int:
-    value = ctx.param("n")
-    if not value.isdigit() or len(value) > 9:
-        raise Gone()
-    return int(value)
+    return ctx.number("n")
 
 
 def index(ctx: Ctx) -> Response:

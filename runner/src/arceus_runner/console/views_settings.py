@@ -17,7 +17,7 @@ from starlette.routing import Route
 from arceus_runner.config import ConfigError, parse_config
 from arceus_runner.console import files
 from arceus_runner.console import settings_form as sf
-from arceus_runner.console.web import Ctx, Gone, page
+from arceus_runner.console.web import Ctx, Gone, as_number, page
 from arceus_runner.db import ReviewStore
 
 SECTIONS = ("/settings/",)
@@ -177,8 +177,8 @@ def yaml_editor(ctx: Ctx) -> Response:
                                   "then the file now against your text. Saving yours replaces theirs: check first.")
         return _preview(ctx, current, ctx.field("text"), origin="/settings/yaml/", note=ctx.field("note"))
     text, restoring = current.text, None
-    if ctx.query("version").isdigit():
-        restoring = ctx.store.version_of(KIND, int(ctx.query("version")))
+    if (n := as_number(ctx.query("version"))) is not None:
+        restoring = ctx.store.version_of(KIND, n)
         if restoring:
             which = ctx.query("which")
             text = restoring["before_text"] if which == "before" and restoring["before_text"] is not None \
@@ -225,10 +225,7 @@ def history(ctx: Ctx) -> Response:
 
 def version(ctx: Ctx) -> Response:
     ctx.require("settings.view")
-    value = ctx.param("id")
-    if not value.isdigit():
-        raise Gone()
-    v = ctx.store.version_of(KIND, int(value))
+    v = ctx.store.version_of(KIND, ctx.number("id"))
     if v is None:
         raise Gone()
     current = files.read(_path(ctx))

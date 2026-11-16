@@ -102,6 +102,13 @@ class Gone(Exception):
     """No such page."""
 
 
+def as_number(text: str) -> int | None:
+    """A number a page takes from its path or query (a run, a version, a person): ASCII digits only, at most nine of
+    them, so what a browser sends never reaches SQLite as a number it cannot hold, nor int() as a digit it cannot read
+    ('²'). Anything else is None."""
+    return int(text) if len(text) <= 9 and text.isascii() and text.isdigit() else None
+
+
 @dataclass
 class Ctx:
     """One request as a page sees it."""
@@ -131,6 +138,13 @@ class Ctx:
 
     def param(self, name: str) -> str:
         return str(self.request.path_params.get(name, ""))
+
+    def number(self, name: str) -> int:
+        """The path's number `name`; no such page when it is not one (as_number)."""
+        n = as_number(self.param(name))
+        if n is None:
+            raise Gone()
+        return n
 
     def query(self, name: str, default: str = "") -> str:
         return self.request.query_params.get(name, default)

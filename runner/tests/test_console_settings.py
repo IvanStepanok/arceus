@@ -205,6 +205,33 @@ def test_a_save_that_loses_a_race_shows_the_file_as_it_is_then_and_saves_on_the_
     assert "max_review_rounds: 7" in w.config.read_text()
 
 
+@pytest.mark.parametrize("path", ["/settings/history/1234567890123456789012345/", "/settings/history/%C2%B2/",
+                                  "/settings/history/-1/", "/users/1234567890123456789012345/", "/users/%C2%B2/",
+                                  "/qa/1234567890123456789012345/", "/qa/%C2%B2/live",
+                                  "/architecture/1234567890123456789012345/", "/architecture/%C2%B2/live",
+                                  "/qa/1234567890/", "/qa/%20/", "/architecture/-1/"])
+def test_a_number_in_a_path_that_is_not_one_is_no_such_page(w, path):
+    admin = signed_in(w.settings, "owner@example.com")
+    assert admin.get(path).status_code == 404, path
+
+
+@pytest.mark.parametrize("path", ["/qa/1234567890123456789012345/stop", "/qa/%C2%B2/stop",
+                                  "/architecture/1234567890123456789012345/stop", "/architecture/%C2%B2/stop",
+                                  "/architecture/findings/1234567890123456789012345", "/architecture/findings/%C2%B2"])
+def test_a_number_in_a_form_s_path_that_is_not_one_is_no_such_page(w, path):
+    admin = signed_in(w.settings, "owner@example.com")
+    token = csrf_of(admin.get("/settings/").text)
+    assert admin.post(path, data={"csrf": token, "decision": "accepted", "note": "x"}).status_code == 404, path
+
+
+@pytest.mark.parametrize("page", ["/settings/yaml/", "/qa/instructions/", "/architecture/instructions/"])
+@pytest.mark.parametrize("version", ["1234567890123456789012345", "%C2%B2", "", "-1"])
+def test_a_version_to_put_back_that_is_not_a_number_opens_the_file_as_it_is(w, page, version):
+    admin = signed_in(w.settings, "owner@example.com")
+    r = admin.get(f"{page}?version={version}")
+    assert r.status_code == 200, (page, version, r.status_code)
+
+
 def test_the_whole_file_as_yaml_and_putting_a_version_back(w):
     original = w.config.read_text()
     admin = signed_in(w.settings, "owner@example.com")
