@@ -14,6 +14,7 @@ import base64
 import os
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -396,6 +397,38 @@ class Git:
     def abort(self, repo: Path, operation: str) -> None:
         """Back to where the operation started: the commits made before it are kept, the half-done part goes."""
         self._run([operation, "--abort"], repo)
+
+
+def restore_workspace(git: Git, ws: Path, branch: str, repos: list[dict], home_prev: str | None, *,
+                      stash_message: str, on_stashed: Callable[[str, str | None], None],
+                      on_committed: Callable[[str, str], None]) -> None:
+    """Every repository a run switched back on the branch it was on, what the run left stashed, the run's branch
+    gone; then the same for the workspace home. Git steps only: the caller records the state after.
+
+    `repos` are the snapshot's entries (`repo`, `prev`, `prev_head`, `sha`). Each step looks at where things are
+    first, so a crash halfway is finished by calling this again: the stash comes before the switch, the switch
+    before the branch is deleted, and a branch is deleted only at the commit just read (one made since keeps it)."""
+    for r in repos:
+        path = ws / r["repo"]
+        if not (path / ".git").exists():
+            continue
+        if git.current_branch(path) == branch:
+            if not git.is_clean(path):
+                on_stashed(r["repo"], git.stash_all(path, stash_message))
+            back = r.get("prev")
+            git.switch(path, back if back and git.branch_exists(path, back) else r["prev_head"])
+        sha = git.branch_sha(path, branch)
+        if sha:
+            if sha != r["sha"]:
+                on_committed(r["repo"], sha)
+            git.delete_branch_at(path, branch, sha)
+    if (ws / ".git").exists():
+        if git.current_branch(ws) == branch:
+            git.home_on(ws, home_prev if home_prev and home_prev != branch and git.branch_exists(ws, home_prev)
+                        else HOME_BRANCH)
+        sha = git.branch_sha(ws, branch)
+        if sha:
+            git.delete_branch_at(ws, branch, sha)
 
 
 def write_git_credentials(base_url: str, username: str, token: str, home: Path | None = None) -> bool:

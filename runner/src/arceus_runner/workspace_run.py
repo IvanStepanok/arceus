@@ -36,7 +36,7 @@ from arceus_runner.config import Config
 from arceus_runner.db import RUN_UNDER_WAY, AgentRun, ReviewStore, Task
 from arceus_runner.delivery import ProjectNotesError, project_notes
 from arceus_runner.engine import EngineError, ReportReview
-from arceus_runner.gitops import HOME_BRANCH, GitError
+from arceus_runner.gitops import HOME_BRANCH, GitError, restore_workspace
 from arceus_runner.http import ServiceError
 from arceus_runner.replies import unattributed
 from arceus_runner.screening import trusted
@@ -618,31 +618,12 @@ class WorkspaceRun:
         """Every repository back on the branch it was on, what the run left stashed, the run's branch gone.
         Each step looks at where things are first, so a crash halfway is finished on the next tick."""
         snap = json.loads(run.snapshot)
-        ws = self.cfg.paths.workspace
-        branch = snap["branch"]
-        for r in snap["repos"]:
-            path = ws / r["repo"]
-            if not r["switch"] or not (path / ".git").exists():
-                continue
-            if self.git.current_branch(path) == branch:
-                if not self.git.is_clean(path):
-                    stash = self.git.stash_all(path, f"arceus: what {self.NOUN} {run.id} left")
-                    self.emit("leftovers_stashed", task_id=run.id, run=run.n, repo=r["repo"], stash=stash)
-                back = r.get("prev")
-                self.git.switch(path, back if back and self.git.branch_exists(path, back) else r["prev_head"])
-            sha = self.git.branch_sha(path, branch)
-            if sha:
-                if sha != r["sha"]:
-                    self.emit("committed", task_id=run.id, run=run.n, repo=r["repo"], sha=sha)
-                self.git.delete_branch_at(path, branch, sha)
-        if (ws / ".git").exists():
-            if self.git.current_branch(ws) == branch:
-                back = snap.get("home_prev")
-                self.git.home_on(ws, back if back and back != branch and self.git.branch_exists(ws, back)
-                                 else HOME_BRANCH)
-            sha = self.git.branch_sha(ws, branch)
-            if sha:
-                self.git.delete_branch_at(ws, branch, sha)
+        restore_workspace(
+            self.git, self.cfg.paths.workspace, snap["branch"], [r for r in snap["repos"] if r["switch"]],
+            snap.get("home_prev"), stash_message=f"arceus: what {self.NOUN} {run.id} left",
+            on_stashed=lambda repo, stash: self.emit("leftovers_stashed", task_id=run.id, run=run.n, repo=repo,
+                                                     stash=stash),
+            on_committed=lambda repo, sha: self.emit("committed", task_id=run.id, run=run.n, repo=repo, sha=sha))
         run = self.store.update_run(run.id, state="publishing")
         self.emit("workspace_restored", task_id=run.id, run=run.n)
         self._publish(run)

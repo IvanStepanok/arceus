@@ -712,6 +712,36 @@ def test_what_the_reviewer_commits_is_dropped_never_published(w):
     assert len(w.gl.mrs) == 1
 
 
+def test_a_review_restore_the_runner_died_in_is_finished_after_a_restart_with_one_note(w, monkeypatch):
+    sha = publish(w)
+    branch = w.store.task("ACME-1").branch
+    ask(w)
+    w.agent_commits("reviewer-fix.txt")
+    (w.repo / "build-output.log").write_text("x")
+    write_verdict(w)
+    from arceus_runner.gitops import Git
+    real = Git.switch
+
+    def dies(self, repo, ref):
+        real(self, repo, ref)
+        raise KeyboardInterrupt  # stashed and switched back; the review branch is still there
+
+    monkeypatch.setattr(Git, "switch", dies)
+    with pytest.raises(KeyboardInterrupt):
+        finish(w)
+    assert not w.events_named("review_workspace_restored")
+    monkeypatch.setattr(Git, "switch", real)
+    w.restart()
+    w.tick()
+    assert len(w.events_named("review_workspace_restored")) == 1
+    assert len(w.events_named("review_leftovers_stashed")) == 1
+    assert len(w.events_named("review_committed")) == 1
+    assert git(w.repo, "symbolic-ref", "--short", "HEAD") == branch
+    assert git(w.repo, "branch", "--list", "arceus-review/*") == ""
+    assert git(w.repo, "rev-parse", branch) == sha and w.remote_branch(branch) == sha
+    assert len(review_notes(w)) == 1 and w.store.review(RID).outcome == "approved"
+
+
 def test_asking_again_for_the_same_commits_gets_the_earlier_review(w):
     publish(w)
     ask(w)

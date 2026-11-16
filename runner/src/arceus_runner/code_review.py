@@ -65,7 +65,7 @@ from arceus_runner.config import DOC_PATHS, TEST_PATHS, RepoChecks
 from arceus_runner.db import ACTIVE_STATES, REVIEW_UNDER_WAY, ReviewRequest, ReviewStore, Task
 from arceus_runner.delivery import ProjectNotesError
 from arceus_runner.engine import EngineError
-from arceus_runner.gitops import HOME_BRANCH, GitError
+from arceus_runner.gitops import HOME_BRANCH, GitError, restore_workspace
 from arceus_runner.http import AuthError, NotFound, ServiceError
 from arceus_runner.integrations import Approval, Comment, Issue, IssueDetails, MRStatus, key_part
 from arceus_runner.replies import decisions_file, unattributed
@@ -914,32 +914,13 @@ class ReviewAgent:
         """Every repository back on the branch it was on, what the run left stashed, the review branch gone.
         Each step looks at where things are first, so a crash halfway is finished on the next tick."""
         snap = json.loads(row.snapshot)
-        ws = self.cfg.paths.workspace
-        branch = snap["branch"]
-        for m in snap["mrs"]:
-            path = ws / m["repo"]
-            if not (path / ".git").exists():
-                continue
-            if self.git.current_branch(path) == branch:
-                if not self.git.is_clean(path):
-                    stash = self.git.stash_all(path, f"arceus: what the review {row.id} left")
-                    self.events.emit("review_leftovers_stashed", task_id=row.task_id, review=row.id, repo=m["repo"],
-                                     stash=stash)
-                back = m.get("prev")
-                self.git.switch(path, back if back and self.git.branch_exists(path, back) else m["prev_head"])
-            sha = self.git.branch_sha(path, branch)
-            if sha:
-                if sha != m["sha"]:
-                    self.events.emit("review_committed", task_id=row.task_id, review=row.id, repo=m["repo"], sha=sha)
-                self.git.delete_branch_at(path, branch, sha)
-        if (ws / ".git").exists():
-            if self.git.current_branch(ws) == branch:
-                back = snap.get("home_prev")
-                self.git.home_on(ws, back if back and back != branch and self.git.branch_exists(ws, back)
-                                 else HOME_BRANCH)
-            sha = self.git.branch_sha(ws, branch)
-            if sha:
-                self.git.delete_branch_at(ws, branch, sha)
+        restore_workspace(
+            self.git, self.cfg.paths.workspace, snap["branch"], snap["mrs"], snap.get("home_prev"),
+            stash_message=f"arceus: what the review {row.id} left",
+            on_stashed=lambda repo, stash: self.events.emit("review_leftovers_stashed", task_id=row.task_id,
+                                                            review=row.id, repo=repo, stash=stash),
+            on_committed=lambda repo, sha: self.events.emit("review_committed", task_id=row.task_id, review=row.id,
+                                                            repo=repo, sha=sha))
         row = self.store.update_review(row.id, state="publishing")
         self.events.emit("review_workspace_restored", task_id=row.task_id, review=row.id)
         self._publish(row)

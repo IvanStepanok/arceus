@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import urllib.error
 import urllib.request
 from datetime import timedelta
@@ -143,6 +144,60 @@ def test_a_finished_run_gets_its_report_and_the_workspace_back(w):
     [published] = w.events_named("qa_published")
     assert (published["outcome"], published["findings"]) == ("found", 1)
     assert published["url"] == "http://localhost:3300/1/" and published["tunnel"] is True
+
+
+def test_what_a_run_committed_and_left_is_kept_and_a_repository_with_work_waiting_is_never_switched(w):
+    theme = w.cfg.paths.workspace / "acme-theme"
+    subprocess.run(["git", "clone", "-q", str(w.origins["acme-theme"]), str(theme)], check=True)
+    git(theme, "switch", "-q", "-c", "ACME-9-waiting")
+    (theme / "draft.txt").write_text("a person's work\n")  # uncommitted: this repository is not switched
+    queue(w)
+    [preparing] = w.events_named("qa_preparing")
+    assert preparing["not_switched"] == ["acme-theme"]
+    assert git(theme, "branch", "--show-current") == "ACME-9-waiting"
+    sha = w.agent_commits("probe.txt")  # the agent committed, though told not to
+    (w.repo / "scratch.txt").write_text("left over\n")
+    report(w)
+    finish(w)
+    assert git(w.repo, "branch", "--show-current") == "main"
+    assert git(w.repo, "status", "--porcelain") == ""
+    assert "scratch.txt" in git(w.repo, "show", "--name-only", "--format=", "stash@{0}^3")
+    [stashed] = w.events_named("qa_leftovers_stashed")
+    assert (stashed["task_id"], stashed["repo"]) == (RID, "acme-platform") and stashed["stash"]
+    [committed] = w.events_named("qa_committed")
+    assert (committed["repo"], committed["sha"]) == ("acme-platform", sha)
+    assert git(w.repo, "branch", "--list", "arceus-qa/*") == ""
+    # The waiting work is where it was, untouched.
+    assert git(theme, "branch", "--show-current") == "ACME-9-waiting"
+    assert (theme / "draft.txt").read_text() == "a person's work\n"
+    assert w.events_named("qa_workspace_restored") and w.store.run(RID).state == "done"
+
+
+def test_a_restore_the_runner_died_in_is_finished_after_a_restart(w, monkeypatch):
+    queue(w)
+    w.agent_commits("probe.txt")
+    report(w)
+    from arceus_runner.gitops import Git
+    real = Git.delete_branch_at
+
+    def dies(self, repo, branch, sha):
+        real(self, repo, branch, sha)
+        raise KeyboardInterrupt  # the process stops here: after the branch is gone, before the state is written
+
+    monkeypatch.setattr(Git, "delete_branch_at", dies)
+    with pytest.raises(KeyboardInterrupt):
+        finish(w)
+    assert w.store.run(RID).state != "done"
+    assert not w.events_named("qa_workspace_restored")
+    monkeypatch.setattr(Git, "delete_branch_at", real)
+    w.restart()
+    w.tick()
+    assert w.store.run(RID).state == "done"
+    assert len(w.events_named("qa_workspace_restored")) == 1
+    assert len(w.events_named("qa_committed")) == 1
+    assert len(w.events_named("qa_published")) == 1
+    assert git(w.repo, "branch", "--show-current") == "main"
+    assert git(w.repo, "branch", "--list", "arceus-qa/*") == ""
 
 
 @pytest.mark.parametrize("console, url, tunnel", [
