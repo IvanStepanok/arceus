@@ -20,6 +20,7 @@ from pydantic import (
     BaseModel,
     BeforeValidator,
     ConfigDict,
+    PrivateAttr,
     Field,
     ValidationError,
     field_validator,
@@ -73,8 +74,30 @@ def _refuse_gone(section: str):
     return model_validator(mode="before")(classmethod(check))
 
 
+# Keys that once had a meaning and never did anything. They load, so an older config.yaml keeps working, and
+# `arceus-runner check` warns about each one still written (Config.retired); any other unknown key is still an error.
+_RETIRED = {
+    "repo_sync": "it never did anything: repositories are fetched when a task needs them; remove this line",
+    "in_progress_alert_after": "it never did anything: a task with no verdict fails after attempt_timeout; "
+                               "remove this line",
+}
+
+
+def _accept_retired(section: str, keys: tuple[str, ...]):
+    def accept(cls, data, handler):
+        found = ()
+        if isinstance(data, dict):
+            found = tuple(f"{section}.{k} is no longer used: {_RETIRED[k]}" for k in keys if k in data)
+            data = {k: v for k, v in data.items() if k not in keys}
+        model = handler(data)
+        model._retired = found
+        return model
+    return model_validator(mode="wrap")(classmethod(accept))
+
+
 class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+    _retired: tuple[str, ...] = PrivateAttr(())
 
 
 def _env_name(v: str) -> str:
@@ -306,7 +329,8 @@ class Schedule(Strict):
     poll_local: Duration = timedelta(minutes=2)
     poll_progress: Duration = timedelta(seconds=30)  # engine steps and agent activity: local files only
     review_debounce: Duration = timedelta(minutes=5)
-    repo_sync: Duration = timedelta(hours=24)
+
+    _accept_old = _accept_retired("schedule", ("repo_sync",))
 
     @field_validator("timezone")
     @classmethod
@@ -341,11 +365,12 @@ class Limits(Strict):
     max_ci_fix_attempts: int = Field(default=3, ge=1)
     needs_input_reminder: Duration = timedelta(hours=24)
     needs_input_fail_after: Duration = timedelta(days=5)
-    in_progress_alert_after: Duration = timedelta(hours=6)
     attempt_timeout: Duration = timedelta(hours=8)  # an attempt with no verdict this long: "agent hung"
     agent_quiet_after: Duration = timedelta(minutes=20)  # nothing in the transcript this long: agent_quiet
     # How long after a failure a `/continue` comment on the ticket still resumes the task.
     continue_window: Duration = timedelta(days=14)
+
+    _accept_old = _accept_retired("limits", ("in_progress_alert_after",))
 
 
 class HealthConfig(Strict):
@@ -780,6 +805,11 @@ class Config(Strict):
     console: ConsoleConfig = ConsoleConfig()
     metrics: MetricsConfig = MetricsConfig()
     paths: Paths = Paths()
+
+    @property
+    def retired(self) -> list[str]:
+        """Keys config.yaml still writes that no longer do anything, each with what to do about it."""
+        return [*self.schedule._retired, *self.limits._retired]
 
     _tracker = field_validator("tracker", mode="wrap")(_provider_section("issue tracker"))
     _code_host = field_validator("code_host", mode="wrap")(_provider_section("code host"))

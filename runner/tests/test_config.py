@@ -351,3 +351,33 @@ def test_slack_notify_idle_repeat_is_no_longer_a_setting(tmp_path):
     with pytest.raises(ConfigError) as e:
         load_config(write(tmp_path, raw))
     assert e.value.problems == ["slack.notify.idle_repeat: unknown key (typo?)"]
+
+
+def test_keys_that_never_did_anything_load_with_a_warning_from_check(tmp_path, capsys):
+    raw = example_raw()
+    raw["schedule"]["repo_sync"] = "24h"
+    raw["limits"]["in_progress_alert_after"] = "6h"
+    raw["paths"] = {"secrets": str(write_secrets(tmp_path, "YOUTRACK_TOKEN=a\nGITLAB_TOKEN=b\n" + SLACK_HOOK))}
+    path = write(tmp_path, raw)
+    cfg = load_config(path)
+    assert cfg.retired == [
+        "schedule.repo_sync is no longer used: it never did anything: repositories are fetched when a task needs "
+        "them; remove this line",
+        "limits.in_progress_alert_after is no longer used: it never did anything: a task with no verdict fails "
+        "after attempt_timeout; remove this line"]
+    assert main(["--config", str(path), "check", "--offline"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "[WARN] config.retired: schedule.repo_sync is no longer used" in out
+    assert "[WARN] config.retired: limits.in_progress_alert_after is no longer used" in out
+    from arceus_runner.console.settings_form import flatten, sections
+    shown = {f.name for _, fields in sections(cfg, path.read_text()) for f in flatten(fields)}
+    assert "schedule.poll_working" in shown
+    assert not shown & {"schedule.repo_sync", "limits.in_progress_alert_after"}
+
+
+def test_a_config_without_the_retired_keys_has_no_warning_and_a_typo_is_still_an_error(tmp_path, capsys):
+    assert load_config(write(tmp_path, example_raw())).retired == []
+    raw = example_raw()
+    raw["schedule"]["repo_synk"] = "24h"
+    with pytest.raises(ConfigError, match="repo_synk"):
+        load_config(write(tmp_path, raw))

@@ -56,6 +56,7 @@ def _print_checks(checks: list[Check], as_json: bool) -> bool:
 def cmd_check(args) -> int:
     cfg, secrets = _load(args)
     checks = [Check("config", "ok", str(_config_path(args.config)))]
+    checks += [Check("config.retired", "warn", text) for text in cfg.retired]
     try:
         require_mode_ready(cfg, bulava_mod.probe(cfg.paths.bulava))
         checks.append(Check("config.mode", "ok", cfg.mode))

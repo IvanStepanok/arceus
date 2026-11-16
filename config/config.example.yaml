@@ -1,5 +1,6 @@
 # Runner settings for one project. Tokens go to secrets.env, not here. Unknown keys are errors.
-# Check with: arceus-runner check
+# Check with: arceus-runner check. It also warns about keys an older file still has that do nothing now
+# (schedule.repo_sync, limits.in_progress_alert_after): they load, and can be removed.
 
 project: acme-shop                     # for logs, metrics, dashboards (a-z, 0-9, -)
 
@@ -82,7 +83,6 @@ schedule:
   poll_local: 2m                       # local health
   poll_progress: 30s                   # a running task's steps and activity
   review_debounce: 5m
-  repo_sync: 24h
 
 http:
   connect_timeout: 10s
@@ -96,7 +96,6 @@ limits:
   max_ci_fix_attempts: 3
   needs_input_reminder: 24h
   needs_input_fail_after: 5d
-  in_progress_alert_after: 6h
   attempt_timeout: 8h                  # no verdict this long: fails as "agent hung"
   agent_quiet_after: 20m               # agent silent this long: agent_quiet
   continue_window: 14d                 # `/continue` resumes a failed task within this
