@@ -182,6 +182,29 @@ def test_a_save_over_a_file_changed_meanwhile_is_refused_with_the_difference(w):
     assert r3.status_code == 409 and "changed since you opened this section" in r3.text
 
 
+def test_a_save_that_loses_a_race_shows_the_file_as_it_is_then_and_saves_on_the_next_try(w, monkeypatch):
+    """Another admin saves between the console reading config.yaml for the look and taking the save lock: the page
+    shows the difference against the file the lock found, with its sha, so saving once more goes through."""
+    from arceus_runner.console import files
+    admin = signed_in(w.settings, "owner@example.com")
+    preview = change(admin, "limits", **{"limits.max_review_rounds": "7"}).text
+    real_save, raced = files.save, []
+
+    def save_after_another(*args, **kwargs):
+        if not raced:
+            raced.append(1)
+            w.config.write_text(w.config.read_text().replace("max_ci_fix_attempts: 3", "max_ci_fix_attempts: 5"))
+        return real_save(*args, **kwargs)
+    monkeypatch.setattr(files, "save", save_after_another)
+    r = save_preview(admin, preview)
+    now = hashlib.sha256(w.config.read_bytes()).hexdigest()
+    assert r.status_code == 409 and "changed while you were looking" in r.text
+    assert re.search(r'name="sha" value="([^"]+)"', r.text).group(1) == now
+    assert "-  max_ci_fix_attempts: 5" in r.text  # saving this text would undo the other admin's change: it shows
+    assert save_preview(admin, r.text).status_code == 303
+    assert "max_review_rounds: 7" in w.config.read_text()
+
+
 def test_the_whole_file_as_yaml_and_putting_a_version_back(w):
     original = w.config.read_text()
     admin = signed_in(w.settings, "owner@example.com")

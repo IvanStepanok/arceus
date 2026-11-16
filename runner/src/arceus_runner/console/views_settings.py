@@ -200,8 +200,8 @@ def save(ctx: Ctx) -> Response:
         return _preview(ctx, current, text, origin=origin)
     try:
         saved = files.save(ctx.store, KIND, _path(ctx), text, ctx.field("sha"), user, ctx.field("note"))
-    except files.Conflict:
-        return _preview(ctx, current, text, origin=origin, conflict=True,
+    except files.Conflict as c:  # c.current is the file as read under the save lock, newer than `current`
+        return _preview(ctx, c.current, text, origin=origin, conflict=True,
                         error="config.yaml changed while you were looking at the change. The difference below is "
                               "against the file as it is now: check it, then save again.")
     except OSError as e:
