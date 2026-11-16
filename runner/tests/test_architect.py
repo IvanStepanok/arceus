@@ -158,7 +158,7 @@ def test_nothing_changed_is_a_report_of_its_own_and_never_reaches_the_engine(w):
     assert w.calls("dispatch") == [] and run.reason == "no repository it reviews changed in the last 30 days"
     page = (w.cfg.architect.reports / "1" / "report.html").read_text()
     assert "Nothing changed" in page and "Did not finish" not in page
-    assert w.runner.delivery.workspace_taken() is None
+    assert w.runner.delivery.workspace.taken() is None
 
 
 def test_a_review_reads_what_changed_with_the_runners_criteria_and_holds_the_workspace(tmp_path, codex):
@@ -177,7 +177,7 @@ def test_a_review_reads_what_changed_with_the_runners_criteria_and_holds_the_wor
         # No instructions written: the runner's criteria alone, in the report language of config.yaml.
         assert "The team's instructions" not in text and "texts in English" in text
         assert git(w.repo, "branch", "--show-current") == "arceus-arch/1"
-        assert w.runner.delivery.workspace_taken().task_id == RID
+        assert w.runner.delivery.workspace.taken().task_id == RID
         take(w)
         assert w.store.task("ACME-1") is None  # a ticket waits for the review
     finally:
@@ -231,7 +231,7 @@ def test_a_finished_review_is_checked_by_codex_kept_and_reported(w, codex):
     assert "confirmed 1 of 1" in page and "Codex" not in page  # the tool is not named: it may change
     assert "<form" not in page  # the copy in the folder is the run as it was: no buttons
     assert git(w.repo, "branch", "--show-current") == "main" and not out_dir(w).exists()
-    assert w.runner.delivery.workspace_taken() is None
+    assert w.runner.delivery.workspace.taken() is None
 
 
 def test_the_next_review_starts_where_the_last_one_ended_and_rechecks_what_it_found(w, codex):

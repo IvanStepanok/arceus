@@ -517,7 +517,7 @@ class ReviewAgent:
         """The merge requests a ticket people worked on links to, kept as its task's; the links that are not
         reviewed come back with why. The description and people's comments count, the runner's own do not."""
         bot = self.cfg.tracker.bot_user
-        group = self.d._group()
+        group = self.d.workspace.group()
         found: dict[str, tuple] = {}  # repository: (its Repo, the MR's number, the link, the MR's state)
         skipped: list[dict] = []
         texts = [issue.description, *(x.text for x in comments if x.author != bot)]
@@ -624,7 +624,7 @@ class ReviewAgent:
                 continue  # the author is working on it, or a security reviewer decides: the review waits
             if not can_take:
                 return
-            holder = self.d.workspace_taken()
+            holder = self.d.workspace.taken()
             if holder is not None:
                 self._note_waiting(row, "workspace_taken", holder=holder.task_id)
                 return
@@ -653,9 +653,9 @@ class ReviewAgent:
             self._refuse(row, task, "nothing", f"{where}, so there is nothing to review."
                          + "".join(f"\n- Not reviewed: {x['url']}: {x['why']}." for x in skipped), outcome="nothing")
             return
-        group = {r.relative_path: r for r in self.d._group()}
+        group = {r.relative_path: r for r in self.d.workspace.group()}
         try:
-            self.d.task_notes(task)  # the task's own, for the reviewer to judge by the rules the work had
+            self.d.workspace.task_notes(task)  # the task's own, for the reviewer to judge by the rules the work had
         except ProjectNotesError as e:
             self._refuse(row, task, "project_notes", f"the project's notes for the agent cannot be given to the "
                                                      f"reviewer ({e}); no review was run.", outcome="unverified")
@@ -671,7 +671,7 @@ class ReviewAgent:
                              outcome="unverified")
                 return
             path = ws / m.repo
-            self.d.ensure_repo(repo, path)
+            self.d.workspace.ensure_repo(repo, path)
             if self.git.current_branch(path) != branch and not self.git.is_clean(path):
                 dirty.append(m.repo)
                 continue
@@ -745,11 +745,11 @@ class ReviewAgent:
         branch = snap["branch"]
         # The review's branch of the home starts from main: main gets the task's notes, not the newest.
         try:
-            notes = self.d.task_notes(task)
+            notes = self.d.workspace.task_notes(task)
         except ProjectNotesError as e:  # kept when the review was prepared, then removed by hand
             self._settled(row, None, f"the project's notes for the agent cannot be given to the reviewer ({e})")
             return
-        self.d.prepare_home(self.d._group(), notes)
+        self.d.workspace.prepare_home(self.d.workspace.group(), notes)
         for m in snap["mrs"]:
             self.git.start_branch(ws / m["repo"], branch, m["sha"])
         extra = self._extra_dirs(row)

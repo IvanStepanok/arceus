@@ -40,6 +40,7 @@ from arceus_runner.gitops import HOME_BRANCH, GitError, restore_workspace
 from arceus_runner.http import ServiceError
 from arceus_runner.replies import unattributed
 from arceus_runner.screening import trusted
+from arceus_runner.workspace import AgentContext
 
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 SLOT_GRACE = timedelta(hours=1)   # a scheduled time is queued within this long after it, never later
@@ -119,12 +120,12 @@ class WorkspaceRun:
                     "correct {name}. Finish again with the outcome succeeded_research, its summary starting with "
                     "`{link}`.")
 
-    def __init__(self, delivery, settings):
-        self.d = delivery
-        self.cfg = delivery.cfg
+    def __init__(self, ctx: AgentContext, settings):
+        self.d = ctx
+        self.cfg = ctx.cfg
         self.c = settings  # the kind's section of config.yaml
-        self.store: ReviewStore = delivery.store
-        self.events = delivery.events
+        self.store: ReviewStore = ctx.store
+        self.events = ctx.events
         self._waiting: dict[str, tuple] = {}
         self._schedule_told: set[str] = set()
 
@@ -218,7 +219,7 @@ class WorkspaceRun:
                 continue
             if not can_take:
                 return
-            holder = self.d.workspace_taken()
+            holder = self.d.workspace.taken()
             if holder is not None:
                 self._note_waiting(run, "workspace_taken", holder=holder.task_id)
                 return
@@ -235,11 +236,11 @@ class WorkspaceRun:
             return
         ws = self.cfg.paths.workspace
         branch = self._branch(run)
-        group = self.d._group()
+        group = self.d.workspace.group()
         repos = []
         for repo in group:
             path = ws / repo.relative_path
-            self.d.ensure_repo(repo, path)
+            self.d.workspace.ensure_repo(repo, path)
             default = repo.default_branch or "main"
             sha = self.git.ref_sha(path, f"origin/{default}")
             current = self.git.current_branch(path)
@@ -288,7 +289,7 @@ class WorkspaceRun:
         except ProjectNotesError as e:
             self._settled(run, None, f"the project's notes for the agent cannot be given to it ({e})")
             return
-        self.d.prepare_home(self.d._group(), notes)
+        self.d.workspace.prepare_home(self.d.workspace.group(), notes)
         for r in snap["repos"]:
             if r["switch"]:
                 self.git.start_branch(ws / r["repo"], branch, r["sha"])

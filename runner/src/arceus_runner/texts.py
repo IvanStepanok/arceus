@@ -13,6 +13,13 @@ from arceus_runner import materials, media
 from arceus_runner.integrations import Comment, IssueDetails, IssueTracker, Repo
 from arceus_runner.replies import unattributed
 
+# Why the engine refused to start a task, by its exit code (engine/SERVER.md).
+START_REFUSED = {
+    76: "the repository folder is not a git repository",
+    77: "the working tree has uncommitted changes from an earlier attempt",
+    78: "no decision was recorded for the repository's MCP servers",
+    79: "the repository has files too large for a checkpoint",
+}
 HOME_IGNORE = """\
 # Every folder here is a repository of the project's group on its code host, cloned by the Arceus runner.
 # This repository holds only the runner's notes for the agent and is never published.

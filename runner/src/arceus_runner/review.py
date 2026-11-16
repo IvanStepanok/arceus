@@ -340,7 +340,7 @@ class ReviewLoop:
         return True
 
     def _target(self, mr) -> str:
-        for r in self.d._group():
+        for r in self.d.workspace.group():
             if r.relative_path == mr.repo:
                 return r.default_branch or "main"
         return "main"
@@ -410,7 +410,7 @@ class ReviewLoop:
     def _maybe_send(self, task: Task) -> None:
         if self.store.open_batch(task.task_id) is None and not self.store.signals(task.task_id, unbatched=True):
             return  # nothing to send, so nothing waits for the workspace either
-        if self.d._workspace_waits(task):
+        if self.d.workspace.waits(task):
             return  # the workspace is shared: nothing is switched while another task works in it
         batch = self.store.open_batch(task.task_id)
         if batch is not None and self._stale(task, self.store.signals(task.task_id, batch.id)):
@@ -467,7 +467,7 @@ class ReviewLoop:
         self._send(task, batch)
 
     def _send(self, task: Task, batch) -> None:
-        if self.d._workspace_waits(task):
+        if self.d.workspace.waits(task):
             return  # the batch stays open and goes on a later tick
         text = current_instructions(batch.text)
         if text != batch.text:
@@ -490,12 +490,12 @@ class ReviewLoop:
         clearance = self.d.gate.clear(task, "review", text,
                                       authors=[*authors, *(m.attachment.author for m in files)] or [batch.author],
                                       resume_state="code_review", ref=batch.id, files=materials.screen_files(files))
-        if clearance is None or not self.d._followup_ready(task):
+        if clearance is None or not self.d.workspace.followup_ready(task):
             return
         self.d.publish_files(task, files)
         reply = self.d.engine.send(task_id=task.task_id, message_id=batch.id, source=batch.source,
                                    author=batch.author, repo=Path(task.repo_path), text=text,
-                                   clearance=clearance, extra_dirs=self.d._extra_dirs_file(task))
+                                   clearance=clearance, extra_dirs=self.d.workspace.extra_dirs_file(task))
         if reply.accepted:
             c = self.cfg.tracker
             has_ci = any(s.kind == "ci" for s in self.store.signals(task.task_id, batch.id))

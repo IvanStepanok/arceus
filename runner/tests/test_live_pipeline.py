@@ -452,7 +452,7 @@ def published_without_a_run(w: World, files: dict[str, str], summary: str, descr
                         attempt_started=None, extra_repos=json.dumps(["acme-platform", "acme-theme"]),
                         published_at_ms=w.yt.clock)
     w.store.upsert_mr("ACME-1", "acme-platform", 0, 1, url, sha)
-    assert d.prepare_workspace(w.store.task("ACME-1"), d._group()) is None
+    assert d.workspace.prepare(w.store.task("ACME-1"), d.workspace.group()) is None
     return sha
 
 

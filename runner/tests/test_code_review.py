@@ -1611,7 +1611,7 @@ def test_a_reviewed_ticket_given_to_the_agent_becomes_its_task(w):
 
 def test_gitlab_reads_a_merge_request_link_of_its_group(w):
     host = w.runner.reviewer.host
-    repos = {r.relative_path: r for r in w.runner.delivery._group()}
+    repos = {r.relative_path: r for r in w.runner.delivery.workspace.group()}
     group = list(repos.values())
     base = "https://gitlab.example.com/clients/acme"
     assert host.mr_link(f"{base}/acme-theme/-/merge_requests/64/diffs", group) == (repos["acme-theme"], 64)
@@ -1921,3 +1921,44 @@ def test_people_merge_requests_one_merged_one_closed_get_no_tags(tmp_path):
     w.gl.mr(6)["state"] = "closed"
     w.tick()
     assert w.store.task(PEOPLE).state == "done" and w.yt.issue_tags[db_id] == {"in development"}
+
+
+def test_a_review_a_test_run_and_a_new_ticket_waiting_together_take_the_workspace_one_at_a_time(tmp_path):
+    instructions = tmp_path / "qa" / "instructions.md"
+    instructions.parent.mkdir(parents=True)
+    instructions.write_text("Platform: https://staging.example.com\nCheck sign-in.\n")
+    w = World(tmp_path, Secrets(tracker=YT_TOKEN, code_host=GL_TOKEN, slack=None, approver=APPROVER_TOKEN),
+              settings={"review_agent": {"enabled": True}, "code_host": {"approver": APPROVER},
+                        "qa": {"enabled": True, "instructions": str(instructions),
+                               "reports": str(tmp_path / "reports")}})
+    w.gl.tokens[APPROVER_TOKEN] = APPROVER["user"]
+    try:
+        publish(w)
+        # All three at once: a code review of ACME-1, a test run, and a new ticket.
+        w.yt.comment("2-1", "j.doe", "/review")
+        w.store.add_run("qa", "command", "ops")
+        w.yt.add_issue(2, ("b1", "j.doe", "+agent"))
+
+        def holders() -> list[str]:
+            review, run = w.store.review_holding(), w.store.run_holding()
+            tasks = [t.task_id for t in w.store.tasks("claimed", "dispatched", "publishing")]
+            return [*([review.id] if review else []), *([run.id] if run else []), *tasks]
+
+        def started() -> list[str]:
+            return [c["argv"][c["argv"].index("--task-id") + 1] for c in w.calls("dispatch")]
+
+        later(w)
+        later(w)
+        assert holders() == [RID] and started() == ["ACME-1", RID]  # the review first, the others wait
+        write_verdict(w)
+        finish(w)
+        later(w)
+        assert holders() == ["qa-1"] and started() == ["ACME-1", RID, "qa-1"]  # then the test run
+        w.set_engine(lambda s: s["tasks"]["qa-1"].update(state="done", attempt_live=False))
+        later(w)
+        later(w)
+        [new] = [t for t in w.store.tasks("claimed", "dispatched", "publishing")]
+        assert holders() == [new.task_id] and started() == ["ACME-1", RID, "qa-1", new.task_id]  # then the ticket
+    finally:
+        w.events.close()
+        w.store.close()

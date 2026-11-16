@@ -112,7 +112,7 @@ def test_a_queued_run_is_a_task_of_its_own_with_the_instructions_and_the_code_at
     assert run.state == "running"
     assert (w.cfg.qa.reports / "1" / "instructions.md").read_text() == w.cfg.qa.instructions.read_text()
     # It holds the workspace: a ticket waits for it.
-    assert w.runner.delivery.workspace_taken().task_id == RID
+    assert w.runner.delivery.workspace.taken().task_id == RID
     take(w)
     assert w.store.task("ACME-1") is None
     assert len(w.calls("dispatch")) == 1
@@ -140,7 +140,7 @@ def test_a_finished_run_gets_its_report_and_the_workspace_back(w):
     assert git(w.repo, "branch", "--show-current") == "main"
     assert git(w.repo, "branch", "--list", "arceus-qa/*") == ""
     assert not out_dir(w).exists()
-    assert w.runner.delivery.workspace_taken() is None
+    assert w.runner.delivery.workspace.taken() is None
     [published] = w.events_named("qa_published")
     assert (published["outcome"], published["findings"]) == ("found", 1)
     assert published["url"] == "http://localhost:3300/1/" and published["tunnel"] is True

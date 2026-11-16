@@ -135,10 +135,11 @@ class Runner:
             self.delivery.review = self.review
             self.reviewer = ReviewAgent(self.delivery)
             self.delivery.reviewer = self.reviewer
-            self.qa = QaAgent(self.delivery)
-            self.architect = ArchitectAgent(self.delivery)
+            self.qa = QaAgent(self.delivery.agent_context())
+            self.architect = ArchitectAgent(self.delivery.agent_context())
             self.background = [self.qa, self.architect]
-            self.delivery.background = self.background
+            # Who else holds the workspace, asked in this order: a code review, then the background runs.
+            self.delivery.workspace.holders = [self.reviewer, *self.background]
         self.progress = ProgressWatcher(cfg.paths.bulava_state, cfg.paths.workspace, store, events, now,
                                         quiet_after=cfg.limits.agent_quiet_after) if self.delivery else None
         self.last_tick: float | None = None  # wall clock of the last finished tick, for the metrics
@@ -365,8 +366,7 @@ class Runner:
         waiting = bool(self.delivery and can_take and (
             any(not self.delivery.skipped(d) for d in self.store.accepted_untaken())
             or self.delivery._continues_waiting()
-            or self.reviewer.waiting()
-            or any(a.waiting() for a in self.background)
+            or self.delivery.workspace.others_waiting()
             or (hasattr(self.store, "has_pending_review") and self.store.has_pending_review())))
         try:
             self.cleanup.maybe_run(Situation(holder, waiting, self.health.get("disk_free") in ("warn", "fail"),
@@ -378,7 +378,7 @@ class Runner:
         """The task in the shared workspace now: a running task, the ticket whose code review runs there, or a test
         run of the platform."""
         if self.delivery:
-            return self.delivery.workspace_taken()
+            return self.delivery.workspace.taken()
         return next(iter(self.store.tasks(*ACTIVE_STATES)), None)
 
     def drain(self) -> dict | None:
@@ -415,8 +415,8 @@ class Runner:
             return "working"
         if self.health.get(f"service.{self.tracker.client.name}") != "ok" or not self.can_take():
             return "unknown"
-        if any(not self.delivery.skipped(d) for d in self.store.accepted_untaken()) or self.reviewer.waiting() \
-                or any(a.waiting() for a in self.background):
+        if any(not self.delivery.skipped(d) for d in self.store.accepted_untaken()) \
+                or self.delivery.workspace.others_waiting():
             return "working"  # taken on this tick or the next
         if self.store.tasks("needs_input", "security_hold"):
             return "waiting"

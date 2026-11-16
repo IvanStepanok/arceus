@@ -1132,9 +1132,9 @@ def test_catching_up_is_logged_only_when_something_came_from_gitlab(w):
     published(w)
     d, task = w.runner.delivery, w.store.task("ACME-1")
     w.store.update_task("ACME-1", state="code_review")
-    assert d._followup_ready(task)                            # same as GitLab
+    assert d.workspace.followup_ready(task)                            # same as GitLab
     w.agent_commits("local.txt")
-    assert d._followup_ready(task)                            # ahead of GitLab: nothing came
+    assert d.workspace.followup_ready(task)                            # ahead of GitLab: nothing came
     assert not w.events_named("branch_caught_up")
 
     git(w.repo, "reset", "-q", "--hard", f"origin/{task.branch}")
@@ -1144,8 +1144,8 @@ def test_catching_up_is_logged_only_when_something_came_from_gitlab(w):
     git(other, "add", "pushed.txt")
     git(other, "-c", "user.name=p", "-c", "user.email=p@p", "commit", "-q", "-m", "a person's fix")
     git(other, "push", "-q", "origin", task.branch)
-    assert d._followup_ready(task)
-    assert d._followup_ready(task)
+    assert d.workspace.followup_ready(task)
+    assert d.workspace.followup_ready(task)
     assert [(e["repo"], e["result"]) for e in w.events_named("branch_caught_up")] == [("acme-platform", "forwarded")]
 
 
