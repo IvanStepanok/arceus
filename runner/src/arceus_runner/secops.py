@@ -83,10 +83,11 @@ report by these points, and only these:
    repository carries says so there.
 5. The summary claims no more than the verdicts show, and its numbers agree with them.
 6. An earlier verdict (`earlier` in advisories.json) changes its word only for a stated reason: a verdict whose word
-   differs from the earlier one says in its evidence what is different (the code, the advisory, or a mistake in the
-   earlier evidence). Every repository with an earlier verdict on an advisory has a verdict on it again: one that no
-   longer carries the component is fixed (after affected or fixed) or not_affected, with evidence that it is gone. A
-   changed word without its reason, or an earlier verdict with no successor, is grounds for FAIL.
+   differs from the earlier one says in its evidence what is different (the code, the advisory, a mistake in the
+   earlier evidence, or the team's notes on its stack, naming what they say). Every repository with an earlier
+   verdict on an advisory has a verdict on it again: one that no longer carries the component is fixed (after
+   affected or fixed) or not_affected, with evidence that it is gone. A changed word without its reason, or an
+   earlier verdict with no successor, is grounds for FAIL.
 
 Do not fail the report for its style, for a repository that does not carry the component and so has no verdict
 (when it had no earlier one), or for an advisory marked needs_review with what would settle it."""
@@ -321,11 +322,12 @@ class SecOpsAgent(WorkspaceRun):
                  "fixed versions, references; any of them may be missing), `text` (the advisory whole) and "
                  "`earlier`: your verdicts on it from an earlier triage run, by repository. An earlier verdict is "
                  "where to start, not the answer: check it again at the commits below. Change its word only when "
-                 "you can say what is different (the code, the advisory, or a mistake in the earlier evidence), and "
-                 "then say which in the new evidence. A repository with an earlier verdict gets a verdict again: if "
-                 "it no longer carries the component, that is `fixed` after `affected` or `fixed`, and `not_affected` "
-                 "otherwise, with evidence that the component is gone (the file that used to name it, while it is "
-                 "still there, is a valid reference).",
+                 "you can say what is different (the code, the advisory, a mistake in the earlier evidence, or the "
+                 "team's notes on its stack, which may rule otherwise than the earlier verdict did), and then say "
+                 "which in the new evidence: for the notes, what they say. A repository with an earlier verdict gets "
+                 "a verdict again: if it no longer carries the component, that is `fixed` after `affected` or "
+                 "`fixed`, and `not_affected` otherwise, with evidence that the component is gone (the file that used "
+                 "to name it, while it is still there, is a valid reference).",
                  "",
                  "## The code", "",
                  "Give verdicts only for these repositories, each read at the commit given:", ""]

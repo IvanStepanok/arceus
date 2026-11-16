@@ -411,12 +411,17 @@ def test_with_post_off_nothing_is_sent_and_the_next_run_is_told_the_last_runs_ve
     queue(w)
     assert {a["id"]: a["earlier"] for a in given(w, "secops-2")}[11] == [
         {"repo": "acme-platform", "verdict": "affected", "evidence": "affected by `docker/Dockerfile:2`"}]
-    # A word changes only with what is different, and a verdict is not dropped; the closing review holds it to that.
+    # A word changes only with what is different, the team's notes among it, and a verdict is not dropped; the
+    # closing review holds it to that.
     text = brief(w, "secops-2")
-    assert "Change its word only when you can say what is different" in text
+    assert ("Change its word only when you can say what is different (the code, the advisory, a mistake in the "
+            "earlier evidence, or the team's notes on its stack, which may rule otherwise than the earlier verdict "
+            "did), and then say which in the new evidence: for the notes, what they say.") in text
     assert "A repository with an earlier verdict gets a verdict again" in text and secops.REPORT_CRITERIA in text
-    criteria = secops.REPORT_CRITERIA
-    assert "6. An earlier verdict (`earlier` in advisories.json) changes its word only for a stated reason" in criteria
+    criteria = " ".join(secops.REPORT_CRITERIA.split())
+    assert ("6. An earlier verdict (`earlier` in advisories.json) changes its word only for a stated reason: a verdict "
+            "whose word differs from the earlier one says in its evidence what is different (the code, the advisory, "
+            "a mistake in the earlier evidence, or the team's notes on its stack, naming what they say).") in criteria
     assert "an earlier verdict with no successor, is grounds for FAIL" in criteria
 
 
