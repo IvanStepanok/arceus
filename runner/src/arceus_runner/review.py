@@ -670,7 +670,7 @@ class ReviewLoop:
             self._answer_threads(task, batch, lambda answer, repo: answer.text if answer else f"{head} {why}")
             if not batch.ci_only:
                 task = self._count(task, batch.id, "answer")
-        visuals = self.d.refresh_media(task)
+        visuals = self.d.publisher.refresh_media(task)
         self.d.post_whole(task, f"nochange:{batch.id if batch else 'none'}", head, why, visuals=visuals)
         self.d.tracker.set_state(task.issue_db_id, self.cfg.tracker.states.code_review)
         self.store.update_task(task.task_id, state="code_review", reason=None)
@@ -704,7 +704,7 @@ class ReviewLoop:
         """People pushed to the MR branch while the agent worked: hand it to the agent to bring their commits in.
 
         `rewritten`: the agent's work no longer builds on the runner's last push there (it rebased the branch).
-        Their commits then go on top of it, so the runner may publish it over theirs (Delivery._replaceable);
+        Their commits then go on top of it, so the runner may publish it over theirs (publish.Publisher._replaceable);
         otherwise the agent's own commits go on top of theirs and the push is a plain one.
         """
         now = self.d.now().isoformat()

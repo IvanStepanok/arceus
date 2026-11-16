@@ -477,6 +477,58 @@ def test_crash_during_publishing_does_not_duplicate(w):
     assert len([t for t in w.bot_comments() if "[arceus:mr:" in t]) == 1
 
 
+def _commit_in_both(w: World) -> dict[str, str]:
+    shas = {"acme-platform": w.agent_commits()}
+    theme = w.cfg.paths.workspace / "acme-theme"
+    (theme / "theme.css").write_text("body {}\n")
+    git(theme, "add", "theme.css")
+    git(theme, "commit", "-q", "-m", "theme")
+    shas["acme-theme"] = git(theme, "rev-parse", "HEAD")
+    return shas
+
+
+@pytest.mark.parametrize("dies_in", ["push_sha", "create_mr"])
+def test_a_stop_after_the_first_push_or_the_first_mr_publishes_each_repository_once(w, monkeypatch, dies_in):
+    """Two repositories to publish; the runner stops right after the first push, or right after the first MR
+    is created. After a restart each branch has its reviewed commit, each repository one MR, the ticket one note."""
+    take(w)
+    shas = _commit_in_both(w)
+    w.settle("ACME-1", "waiting_review")
+    pushes: list[str] = []
+    real_push = Git.push_sha
+
+    def push(self, repo, sha, branch, replaces=None):
+        real_push(self, repo, sha, branch, replaces)
+        pushes.append(Path(repo).name)
+        if dies_in == "push_sha" and len(pushes) == 1:
+            raise KeyboardInterrupt  # the branch is on the code host, nothing after it is done
+
+    real_create = type(w.runner.code_host).create_mr
+
+    def create(self, *args, **kwargs):
+        mr = real_create(self, *args, **kwargs)
+        if dies_in == "create_mr" and len(w.gl.mrs) == 1:
+            raise KeyboardInterrupt  # the MR exists, the runner never wrote it down
+        return mr
+
+    monkeypatch.setattr(Git, "push_sha", push)
+    monkeypatch.setattr(type(w.runner.code_host), "create_mr", create)
+    with pytest.raises(KeyboardInterrupt):
+        w.tick()
+    assert w.store.task("ACME-1").state == "publishing"
+    w.restart()
+    w.clock.advance(3600)
+    w.tick()
+    task = w.store.task("ACME-1")
+    assert task.state == "code_review"
+    branch = task.branch
+    assert {name: w.remote_branch(branch, name) for name in shas} == shas
+    assert sorted(pushes) == ["acme-platform", "acme-theme"]  # each branch pushed once: the retry found it there
+    assert len(w.gl.mrs) == 2 and len({(m["project_id"], m["source_branch"]) for m in w.gl.mrs}) == 2
+    assert len({m.repo for m in w.store.task_mrs("ACME-1")}) == 2
+    assert len([t for t in w.bot_comments() if "[arceus:mr:" in t]) == 1
+
+
 def test_comment_posted_before_a_crash_is_not_posted_again(w):
     take(w)
     task = w.store.task("ACME-1")
