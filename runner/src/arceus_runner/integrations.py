@@ -2,13 +2,13 @@
 triage, an advisory register.
 
 The runner's flow (loop, delivery, review, screening, cleanup, secops) talks only to these contracts.
-YouTrack (youtrack.py) and GitLab (gitlab.py) are the implementations that ship with Arceus; another
-is one more module with the same shape, named in config.yaml:
+YouTrack (youtrack.py), GitLab (gitlab.py) and a folder of OSV files (advisory_files.py) are the
+implementations that ship with Arceus; another is one more module with the same shape, named in config.yaml:
 
     tracker:   { type: youtrack, ... }   # or a module of your own: { type: acme_arceus.jira, ... }
     code_host: { type: gitlab, ... }
     secops:
-      register: { type: acme_arceus.register, ... }
+      register: { type: files, ... }     # or { type: acme_arceus.register, ... }
 
 A provider module defines three things:
 
@@ -501,7 +501,7 @@ class RegisterType:
 
 BUILTIN_TRACKERS = {"youtrack": "arceus_runner.youtrack"}
 BUILTIN_CODE_HOSTS = {"gitlab": "arceus_runner.gitlab"}
-BUILTIN_REGISTERS: dict[str, str] = {}
+BUILTIN_REGISTERS = {"files": "arceus_runner.advisory_files"}
 _MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
 

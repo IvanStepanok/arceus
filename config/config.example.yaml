@@ -194,7 +194,11 @@ architect:
 # Reports: http://localhost:3302/ over an SSH tunnel, also with the console on (it has no section for them yet).
 secops:
   enabled: false
-  # register: { type: acme_arceus.register }   # required when enabled: the module of your advisory register
+  # register:                     # required when enabled: where the advisories are (docs/secops.md)
+  #   type: files                  # built in: OSV records in a folder; or the module path of your own register
+  #   advisories: ~/arceus/data/secops/advisories      # one OSV record per .json file
+  #   verdicts: ~/arceus/data/secops/verdicts.json     # optional: the OpenVEX document verdicts go to with `post`
+  #   author: "ACME Security <security@example.com>"   # the document's author, required with verdicts
   instructions: ~/arceus/data/secops/instructions.md   # optional notes on your stack; setup.sh creates a template
   reports: ~/arceus/data/secops/runs                 # report.html, result.json per run
   # schedule: { days: [sat], at: "03:00" }           # in schedule.timezone
