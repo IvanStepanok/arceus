@@ -230,6 +230,71 @@ def log_hint(log: Path) -> str:
     return short_text(hint, 200)
 
 
+# The review gate's entry when its reviewers stopped the work for a person (engine/hooks/review-gate.sh): appended to
+# the run's `reports/blocked.md` under `## <time> — session <id> — BLOCKED`. Its other entries there (a reviewer it
+# could not reach, a run under review too long, rounds without progress) have other headings and stay failures.
+_REVIEW_BLOCKED = re.compile(r"^## .* — BLOCKED\s*$")
+_GATE_LINE = re.compile(r"^(STATE|VERDICT|REVIEW TEAM):")
+_TEAM_MEMBER = re.compile(r"^— (.+?): ([A-Z][A-Z_-]*) —$")
+
+
+def review_stop(note: str) -> str:
+    """What the reviewers asked a person, from a run's `blocked.md`: the last entry, when it is the review's own
+    BLOCKED, else nothing. With a review team, only the members that stopped the work, each under its name."""
+    last = re.split(r"(?m)^(?=## )", note.strip())[-1]
+    head, _, body = last.partition("\n")
+    if not _REVIEW_BLOCKED.match(head):
+        return ""
+    loose: list[str] = []
+    members: list[tuple[str, str, list[str]]] = []
+    for line in body.splitlines():
+        if _GATE_LINE.match(line.strip()):
+            continue
+        m = _TEAM_MEMBER.match(line.strip())
+        if m:
+            members.append((m.group(1), m.group(2), []))
+        else:
+            (members[-1][2] if members else loose).append(line)
+    parts = [f"**{name}:** {unattributed(chr(10).join(said)).strip()}" for name, verdict, said in members
+             if verdict == "BLOCKED" and "".join(said).strip()]
+    if not parts:
+        parts = [unattributed("\n".join(loose) or "\n".join(ln for _, _, said in members for ln in said)).strip()]
+    return "\n\n".join(p for p in parts if p).strip()
+
+
+def _unpublished(mrs: list[str]) -> str:
+    """What is and is not published while the task waits: nothing yet, or, after its MRs were opened, only this
+    round's changes, the MRs staying as they were."""
+    if not mrs:
+        return "Nothing is published yet; the branch and its commits are kept on the server."
+    return ("The changes of this round are not published yet; they are kept on the server. The merge requests stay "
+            "as they were: " + ", ".join(mrs) + ".")
+
+
+def review_question(asked: str, report: str, mrs: list[str] = ()) -> str:
+    """The question a review that stopped for a person's decision puts on the ticket: what it asks, then the work.
+    `mrs` are the task's merge requests already open, when the stop came in a later round."""
+    where = "before its changes were published" if mrs else "before a merge request"
+    out = [f"The review stopped this work {where}: it needs a person's decision. {_unpublished(list(mrs))}",
+           "", "**What the review asks:**", "", asked]
+    if report.strip():
+        out += ["", "**What the agent did:**", "", report.strip()]
+    return "\n".join(out)
+
+
+def stop_question(needs: list[str], report: str, mrs: list[str] = ()) -> str:
+    """The question for a stop the agent declared without one of its own: that it waits for a person, what it named
+    as needed (its blocker findings), then its report."""
+    where = "before publishing this round's changes" if mrs else "before a merge request"
+    out = [f"The agent stopped {where} and waits for a person to answer or act. Arceus publishes only work that "
+           f"passed review. {_unpublished(list(mrs))}"]
+    if needs:
+        out += ["", "**What it needs:**", "", *(f"- {unattributed(n).strip()}" for n in needs)]
+    if report.strip():
+        out += ["", "**What the agent did:**", "", report.strip()]
+    return "\n".join(out)
+
+
 def comments_section(comments: list[Comment]) -> str:
     """People's comments on the ticket, for the agent, oldest first."""
     lines = ["## Comments on the ticket, oldest first", "",

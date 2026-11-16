@@ -1724,3 +1724,41 @@ def test_a_reaction_journaled_before_a_restart_is_put_there_after_it_and_the_req
     [send] = sends(w)                                      # once, with where the person wrote it
     assert "This should be a constant" in send["argv"][-1] and "app/login.py:12" in send["argv"][-1]
     assert len(award_posts(w)) == 1 and not w.store.pending_actions()
+
+
+def test_a_review_stop_in_a_later_round_asks_names_the_open_mr_and_the_answer_goes_on_to_the_same_mr(w):
+    """Published, then a review round the reviewers stopped for a person: the ticket says the open MR stays as it
+    was and only this round's changes wait; the answer takes the round on and its fix lands on the same MR."""
+    first = published(w)
+    url = w.store.task_mrs("ACME-1")[0].url
+    w.gl.note(1, "reviewer", "@acme-agent-bot Please rename this function", path="app/login.py", line=12)
+    w.tick()
+    later(w)
+    w.agent_commits("round.txt")
+    w.settle("ACME-1", "failed", review="failed", state_reason="needs-user",
+             outcome={"result": "succeeded_changes", "summary": "Renamed it everywhere"})
+
+    def fn(s):
+        t = s["tasks"]["ACME-1"]
+        t["receipt"].update(run_id="run-r", review_why="")
+        t["attempts"][-1]["run_id"] = "run-r"
+    w.set_engine(fn)
+    reports = w.cfg.paths.bulava_state / "runs" / "run-r" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "blocked.md").write_text("## 2026-11-16 20:00:00 — session s-1 — BLOCKED\nSTATE: BLOCKED\n"
+                                        "VERDICT: N/A\nThe TL has to agree the new name.\n")
+    w.tick()
+    task = w.store.task("ACME-1")
+    assert task.state == "needs_input" and "agent-needs-input" in w.yt.issue_tags["2-1"]
+    [q] = [t for t in w.bot_comments() if "the agent needs an answer to continue" in t]
+    assert "before its changes were published" in q and "The changes of this round are not published yet" in q
+    assert url in q and "Nothing is published yet" not in q and "before a merge request" not in q
+    assert "The TL has to agree the new name." in q and "Renamed it everywhere" in q
+    assert w.remote_branch(task.branch) == first and len(w.gl.mrs) == 1   # the MR as it was
+
+    w.yt.comment("2-1", "a.smith", "The new name is agreed.")
+    w.tick()
+    assert sends(w)[-1]["argv"][-1] == "The new name is agreed."
+    sha = fix_and_settle(w, "agreed.txt", "Renamed as agreed")
+    task = w.store.task("ACME-1")
+    assert task.state == "code_review" and w.remote_branch(task.branch) == sha and len(w.gl.mrs) == 1

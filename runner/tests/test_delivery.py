@@ -1499,6 +1499,101 @@ def test_a_check_failure_from_an_older_engine_still_fails_the_task(w):
     assert not [e for e in read_events(w.cfg.paths.events) if e["event"] == "required_check_missed"]
 
 
+TEAM_BLOCKED = """
+## 2026-11-16 17:52:03 — session s-1 — BLOCKED
+STATE: BLOCKED
+VERDICT: N/A
+REVIEW TEAM: 3 of 3 reviewers answered (Contract, Security, State).
+
+— Contract: BLOCKED —
+The TL has to confirm on the ticket that the story may go ahead without a ledger row.
+
+— Security: PASS —
+Nothing found; the gate holds.
+
+— State: BLOCKED —
+Codex: the TL has to agree the superuser gate on the docs.
+"""
+
+
+def _review_stopped(w, note: str, run_id: str = "run-9", last_run: str | None = None) -> None:
+    """The engine's record of a review that parked the attempt for a person, with the gate's note in its run folder."""
+    take(w)
+    w.agent_commits()
+    w.settle("ACME-1", "failed", review="failed", state_reason="needs-user",
+             outcome={"result": "succeeded_changes", "summary": "Docs closed to everyone but a superuser."})
+
+    def fn(s):
+        t = s["tasks"]["ACME-1"]
+        t["receipt"].update(run_id=run_id, review_why="")
+        t["attempts"][-1]["run_id"] = last_run or run_id
+    w.set_engine(fn)
+    reports = w.cfg.paths.bulava_state / "runs" / run_id / "reports"
+    reports.mkdir(parents=True)
+    (reports / "blocked.md").write_text(note)
+
+
+def test_a_review_that_stops_for_a_person_asks_on_the_ticket_and_a_plain_reply_goes_on(w):
+    """GH-914: every reviewer that stopped the work asked for a decision. The ticket gets what they asked as a
+    question with the needs-input tag, not a failure; a plain reply from an allowed person starts the next round."""
+    _review_stopped(w, "\n## 2026-11-16 17:40:00 — session s-0\nReviewer unreachable once.\n" + TEAM_BLOCKED)
+    w.tick()
+    task = w.store.task("ACME-1")
+    assert task.state == "needs_input" and task.question_id is None
+    assert "agent-needs-input" in w.yt.issue_tags["2-1"] and "agent-failed" not in w.yt.issue_tags["2-1"]
+    [q] = [t for t in w.bot_comments() if "[arceus:question:1]" in t]
+    assert "@j.doe" in q and "Nothing is published yet" in q
+    assert "**Contract:** The TL has to confirm on the ticket" in q
+    assert "**State:** the TL has to agree the superuser gate" in q  # the model's label taken off
+    assert "Nothing found" not in q and "VERDICT" not in q and "Reviewer unreachable" not in q
+    assert "Docs closed to everyone but a superuser." in q
+    assert "could not take this ticket" not in "\n".join(w.bot_comments())
+    assert w.gl.mrs == [] and w.remote_branch("agent/ACME-1-fix-login-page") is None
+    [e] = w.events_named("task_needs_input")
+    assert e["review"] is True
+
+    w.yt.comment("2-1", "a.smith", "Go ahead without a ledger row; the superuser gate is agreed.")
+    w.tick()
+    [send] = w.calls("worker-send")
+    assert "--answers" not in send["argv"] and send["argv"][-1].endswith("the superuser gate is agreed.")
+    assert w.store.task("ACME-1").state == "dispatched"
+    assert "agent-needs-input" not in w.yt.issue_tags["2-1"]
+
+
+def test_a_park_for_a_person_that_is_not_the_review_s_block_stays_a_failure(w):
+    """The gate's other notes in blocked.md (a reviewer it could not reach, rounds without progress) are no
+    decision the reviewers asked for: the task fails as before."""
+    _review_stopped(w, TEAM_BLOCKED + "\n## 2026-11-16 18:00:00 — session s-2\nReviewer unreachable 5 times.\n")
+    w.tick()
+    task = w.store.task("ACME-1")
+    assert task.state == "failed" and task.reason == "the review asked for a person's decision"
+    assert "agent-failed" in w.yt.issue_tags["2-1"] and "agent-needs-input" not in w.yt.issue_tags["2-1"]
+
+
+def test_an_earlier_attempt_s_block_never_stands_for_this_one(w):
+    _review_stopped(w, TEAM_BLOCKED, run_id="run-1", last_run="run-2")
+    w.tick()
+    assert w.store.task("ACME-1").state == "failed"
+
+
+def test_a_stop_without_a_question_says_nothing_is_published_and_what_is_needed(w):
+    """GH-1227: the agent declared `blocked` with no question in words. The ticket said only "the agent needs an
+    answer" over its report, and a person redid the work believing the branch was lost."""
+    take(w)
+    w.set_engine(lambda s: s["tasks"]["ACME-1"].update(
+        state="blocked", attempt_live=False, question=None,
+        outcome={"result": "blocked", "summary": "Upgraded the libraries; checked locally."},
+        receipt={"review": "failed", "findings": [
+            {"kind": "note", "text": "a side remark"},
+            {"kind": "blocker", "text": "Dev smoke can run only after the MR is merged and Dev is rebuilt."}]}))
+    w.tick()
+    [q] = [t for t in w.bot_comments() if "[arceus:question:1]" in t]
+    assert "Nothing is published yet" in q and "Arceus publishes only work that passed review" in q
+    assert "- Dev smoke can run only after the MR is merged" in q and "a side remark" not in q
+    assert "Upgraded the libraries; checked locally." in q
+    assert w.store.task("ACME-1").state == "needs_input"
+
+
 def test_a_person_asked_by_codex_is_still_codex_s_decision(w):
     take(w)
     w.agent_commits()

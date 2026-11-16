@@ -51,9 +51,12 @@ from arceus_runner.texts import (
     parse_ts,
     piece_kind,
     research_brief,
+    review_question,
+    review_stop,
     short_text,
     slugify,
     split_answer,
+    stop_question,
     ticket_media_text,
     ticket_pieces,
 )
@@ -568,6 +571,13 @@ class Delivery:
                 self.fail(task, f"The change passed review, {verdict}, so it was not published",
                           self._debt_details(task, receipt, outcome, failed + unproven), attempt=len(attempts))
                 return
+            if why == "needs-user":
+                asked = self._review_asked(receipt, attempts)
+                if asked:
+                    # The reviewers stopped the work for a person's decision: that is a question, put whole on the
+                    # ticket, and a plain reply takes the work on, as with any other question.
+                    self.ask(task, show, review_asked=asked)
+                    return
             reason = FAIL_REASONS.get(why) or FAIL_REASONS.get(outcome.get("reason") or "") or why
             self.fail(task, reason, outcome.get("summary") or "", attempt=len(attempts))
         else:
@@ -654,6 +664,21 @@ class Delivery:
         except ServiceError as e:
             self.events.emit("notify_pending", task_id=task.task_id, reason=str(e))
         return True
+
+    def _review_asked(self, receipt: dict, attempts: list[dict]) -> str:
+        """What the reviewers asked a person when they stopped this attempt (`texts.review_stop`), from the review
+        gate's note in the attempt's run folder; empty for any other `needs-user`. The note is read only for the
+        run of the receipt, and only when that is the last attempt's: an earlier attempt's note never stands for
+        this one."""
+        run_id = str(receipt.get("run_id") or "")
+        last = (attempts[-1].get("run_id") if attempts else None) or run_id
+        if not run_id or run_id != last or "/" in run_id or run_id.startswith("."):
+            return ""
+        note = self.cfg.paths.bulava_state / "runs" / run_id / "reports" / "blocked.md"
+        try:
+            return self.events.redact(review_stop(note.read_text(errors="replace")))
+        except OSError:
+            return ""
 
     def _verifier_gaps(self, receipt: dict) -> tuple[list[str], list[str]]:
         """The verifier's failed and inconclusive checks for this run, one line each, from its evidence.json."""
@@ -1015,16 +1040,31 @@ class Delivery:
             except GitError as e:
                 self.events.emit("research_leftovers_kept", task_id=task.task_id, repo=name, reason=str(e))
 
-    def ask(self, task: Task, show: dict) -> None:
+    def ask(self, task: Task, show: dict, review_asked: str = "") -> None:
+        """The question on the ticket, tagged needs-input: the agent's own, or what the reviewers asked when they
+        stopped the work (`review_asked`). A stop with no question in words says that nothing is published and
+        what the agent named as needed, so the ticket never reads as a report with nothing asked."""
         q = show.get("question") or {}
         outcome = show.get("outcome") or {}
         attempt = len(show.get("attempts") or [])
-        text = q.get("text") or outcome.get("summary") or "The agent needs a decision from a person."
+        report = outcome.get("summary") or ""
+        mrs = [m.url for m in self.store.task_mrs(task.task_id) if m.url]  # a later round: these stay as they were
+        if review_asked:
+            q = {}
+            text = review_question(review_asked, report, mrs)
+        elif q.get("text"):
+            text = q["text"]
+        else:
+            needs = [str(f.get("text") or "") for f in (show.get("receipt") or {}).get("findings") or []
+                     if isinstance(f, dict) and f.get("kind") == "blocker" and f.get("text")]
+            text = stop_question(needs, report, mrs)
         options = list(q.get("options") or [])
         # The question goes whole, with the screenshots it is about: what is cut off is what the person never sees.
         foot = "\n".join([*(f"{i}. {opt}" for i, opt in enumerate(options, 1)), "",
                           "Reply with a comment on this ticket: the option's number or your own words." if options
-                          else "Reply with a comment on this ticket."]).strip()
+                          else "Reply with a comment on this ticket: your decision on each point. The agent "
+                               "continues with it, and the work is reviewed again before anything is published."
+                          if review_asked else "Reply with a comment on this ticket."]).strip()
         posted = self.post_whole(task, f"question:{q.get('id') or attempt}",
                                  f"{self.tracker.mention(task.tag_author)}, the agent needs an answer to continue:",
                                  text, foot, visuals=self.publisher.task_media(task))[0]
@@ -1032,11 +1072,11 @@ class Delivery:
         # The words go with the state, whole as the ticket got them: the console's task page shows them, and the
         # project's channel (notify.py) quotes them, cut to its own length, whenever it tells the question.
         words = {"id": q.get("id"), "text": short_text(text, QUESTION_KEEP), "options": list(q.get("options") or []),
-                 "blocked": show.get("state") == "blocked"}
+                 "blocked": show.get("state") == "blocked", "review": bool(review_asked)}
         self.store.update_task(task.task_id, state="needs_input", question_id=q.get("id"),
                                question_at_ms=posted[1] if posted else None, question=json.dumps(words))
         self.events.emit("task_needs_input", task_id=task.task_id, question_id=q.get("id"),
-                         blocked=words["blocked"])
+                         blocked=words["blocked"], **({"review": True} if review_asked else {}))
 
     def check_answers(self) -> None:
         """A comment from an allowed person after the question is the answer."""
