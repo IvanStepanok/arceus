@@ -282,13 +282,13 @@ class SecOpsAgent(WorkspaceRun):
         return extra, None
 
     def _earlier(self, run: AgentRun) -> dict[Id, list[dict]]:
-        """The agent's earlier verdicts by advisory: what was sent to the register (`post`, to one that receives
-        them), else what the last run that finished kept."""
-        if self.c.post and self.register.receives:
-            rows = [dict(r) for r in self.store.last_sent(run.n).values()]
-        else:
-            last = next((r for r in reversed(self.store.runs(self.KIND, "done")) if r.outcome in COMPLETE), None)
-            rows = json.loads(last.result or "{}").get("verdicts") or [] if last else []
+        """The agent's earlier verdicts by advisory, its latest on each advisory and repository: what the last run
+        that finished kept, and, for a pair that run did not judge, what was last sent to the register. Whether
+        `post` was on when they were given does not matter."""
+        last = next((r for r in reversed(self.store.runs(self.KIND, "done")) if r.outcome in COMPLETE), None)
+        rows = json.loads(last.result or "{}").get("verdicts") or [] if last else []
+        judged = {(r["advisory"], r["repo"]) for r in rows}
+        rows += [dict(r) for pair, r in self.store.last_sent(run.n).items() if pair not in judged]
 
         out: dict[Id, list[dict]] = {}
         for r in rows:

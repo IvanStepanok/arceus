@@ -323,7 +323,8 @@ def test_kept_verdicts_go_to_the_register_once_and_a_refusal_is_kept_with_its_wo
     w.register.add(replace(w.register.advisories["12"], changed="2026-11-14T09:00:00Z"))
     queue(w)
     told = {a["id"]: a["earlier"] for a in given(w, "secops-2")}
-    assert told[11] == [{"repo": "acme-platform", "verdict": "affected", "evidence": evidence}]
+    assert told[11] == [{"repo": "acme-platform", "verdict": "affected", "evidence": evidence},  # refused: still its
+                        {"repo": "acme-theme", "verdict": "affected", "evidence": evidence}]    # latest verdict
     assert told["12"] == [{"repo": "acme-platform", "verdict": "needs_review", "evidence": cut}]
     report(w, "secops-2", verdicts=[verdict(11, "acme-platform", "affected", "still pinned at `2.3.0`"),
                                     verdict("12", "acme-platform", "needs_review", where=[])])
@@ -417,6 +418,31 @@ def test_with_post_off_nothing_is_sent_and_the_next_run_is_told_the_last_runs_ve
     criteria = secops.REPORT_CRITERIA
     assert "6. An earlier verdict (`earlier` in advisories.json) changes its word only for a stated reason" in criteria
     assert "an earlier verdict with no successor, is grounds for FAIL" in criteria
+
+
+def test_the_agent_is_told_its_latest_verdict_whether_or_not_post_was_on_when_it_was_given(make):
+    def post(on: bool) -> None:
+        w.cfg = w.cfg.model_copy(update={"secops": w.cfg.secops.model_copy(update={"post": on})})
+        w.restart()
+        w.runner.secops.register = w.register
+
+    w = make(post=True)
+    two_advisories(w)
+    queue(w)
+    report(w, verdicts=[verdict(11, "acme-platform", "affected"), verdict("12", "acme-platform", "needs_review",
+                                                                          "set at deploy time", where=[])])
+    finish(w)
+    assert sent(w) == [11, "12"]
+    post(False)
+    queue(w)
+    report(w, "secops-2", verdicts=[verdict(11, "acme-platform", "fixed", "`docker/Dockerfile:2` pins `2.4.1`")])
+    finish(w, "secops-2")  # kept in its report, not sent
+    post(True)
+    queue(w)
+    # Advisory 11: the last run's word, not the older one on the register; "12", which it did not judge: the sent one.
+    assert {a["id"]: a["earlier"] for a in given(w, "secops-3")} == {
+        11: [{"repo": "acme-platform", "verdict": "fixed", "evidence": "`docker/Dockerfile:2` pins `2.4.1`"}],
+        "12": [{"repo": "acme-platform", "verdict": "needs_review", "evidence": "set at deploy time"}]}
 
 
 def test_a_run_that_did_not_finish_or_whose_report_did_not_pass_its_review_sends_nothing(make):
