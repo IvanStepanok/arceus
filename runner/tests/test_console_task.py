@@ -563,10 +563,11 @@ def test_every_task_and_run_link_on_home_and_the_lists_opens(w):
     task(w.store, "ACME-3", "code_review")
     task(w.store, "ACME-4", "failed", reason="boom")
     w.store.record_trigger("ACME-20", "tag-1", "ivan", True, 1)
-    for kind in ("qa", "arch"):
+    for kind in ("qa", "arch", "secops", "secops"):  # advisory triage has no section: named on home, never linked
         run = w.store.add_run(kind, "command", "x@example.com", scenario=1 if kind == "qa" else 0)
         w.store.update_run(run.id, state="running")
     c = signed_in(w.settings, "owner@example.com")
+    assert "Advisory triage, run 2" in c.get("/").text
     pages = ["/", "/tasks/", "/qa/", "/architecture/"]
     links = set()
     for p in pages:

@@ -23,9 +23,10 @@ ERROR_BODY = 2048  # bytes of a download's error body read for its message
 
 
 class ServiceError(Exception):
-    def __init__(self, service: str, message: str, status: int | None = None):
+    def __init__(self, service: str, message: str, status: int | None = None, body: str = ""):
         self.service = service
         self.status = status
+        self.body = body  # the start of a refusal's body, our credentials taken out: the service's own words
         super().__init__(f"{service}: {message}")
 
 
@@ -245,9 +246,10 @@ class ServiceClient:
             self.state.slow = True
 
         if code == 404:
-            raise NotFound(self.name, f"{what}: not found", code)
+            raise NotFound(self.name, f"{what}: not found", code, self._scrub(body()[:500]))
         if code >= 400:
-            raise BadRequest(self.name, f"{what}: HTTP {code}: {self._scrub(body()[:500])}", code)
+            text = self._scrub(body()[:500])
+            raise BadRequest(self.name, f"{what}: HTTP {code}: {text}", code, text)
         if 300 <= code < 400:
             raise BadRequest(self.name, f"{what}: unexpected redirect to {resp.headers.get('location')}", code)
 

@@ -486,7 +486,8 @@ apply_runner() {
   local target example
   for target in config.yaml:config.example.yaml secrets.env:secrets.env.example bulava.env:bulava.env.example \
       project-notes.md:project-notes.example.md qa/instructions.md:qa-instructions.example.md \
-      architect/instructions.md:architect-instructions.example.md; do
+      architect/instructions.md:architect-instructions.example.md \
+      secops/instructions.md:secops-instructions.example.md; do
     example="${target#*:}"; target="${target%%:*}"
     if [ ! -e "$DATA_DIR/$target" ]; then
       install -d -m 700 -o "$RUN_USER" -g "$RUN_GROUP" "$(dirname "$DATA_DIR/$target")"
@@ -497,6 +498,7 @@ apply_runner() {
       elif [ "$target" = project-notes.md ]; then say "  created $DATA_DIR/$target: the project's notes for the agent, comments only until written"
       elif [ "$target" = qa/instructions.md ]; then say "  created $DATA_DIR/$target: instructions for test runs of the platform (qa:), comments only until written"
       elif [ "$target" = architect/instructions.md ]; then say "  created $DATA_DIR/$target: the team's instructions for architecture reviews (architect:), optional, comments only"
+      elif [ "$target" = secops/instructions.md ]; then say "  created $DATA_DIR/$target: the team's notes on its stack for advisory triage (secops:), optional, comments only"
       else say "  created $DATA_DIR/$target from $example: fill it in"; fi
     fi
   done

@@ -1,4 +1,5 @@
-"""An issue tracker and a code host that live in memory: a provider module from outside the runner.
+"""An issue tracker, a code host and an advisory register that live in memory: a provider module from outside
+the runner.
 
 config.yaml names it by module path, `type: tests.memory_providers`, the way a Jira or GitHub module
 of someone's own would be named. It imports nothing of YouTrack or GitLab, and it differs from them
@@ -15,20 +16,24 @@ from datetime import date
 import httpx
 
 from arceus_runner.checks import Check
-from arceus_runner.config import CodeHostConfig, HttpConfig, IssueTrackerConfig
+from arceus_runner.config import AdvisoryRegisterConfig, CodeHostConfig, HttpConfig, IssueTrackerConfig
 from arceus_runner.gitops import GitAuth
-from arceus_runner.http import ServiceClient, TransientError
+from arceus_runner.http import BadRequest, ServiceClient, ServiceError, TransientError
 from arceus_runner.integrations import (
+    Advisory,
     CIJob,
     CodeHostType,
     Comment,
     FailedJob,
+    Id,
     Issue,
     IssueDetails,
     MergeRequest,
     MRStatus,
     Note,
+    RegisterType,
     Repo,
+    RepoAt,
     TrackerType,
     Trigger,
 )
@@ -335,3 +340,59 @@ class MemoryHost:
 TRACKER = TrackerType(config=MemoryTrackerConfig, build=lambda cfg, token, http, transport=None: MemoryTracker(cfg, http))
 CODE_HOST = CodeHostType(config=MemoryHostConfig,
                          build=lambda cfg, token, http, transport=None: MemoryHost(cfg, http, token))
+
+
+# -- the advisory register --------------------------------------------------------------------------
+
+
+class MemoryRegisterConfig(AdvisoryRegisterConfig):
+    token_env: str | None = "MEMORY_REGISTER_TOKEN"
+    receives: bool = True
+
+
+class MemoryRegister:
+    """Advisories by id, and the latest verdict of each repository on each. `fail[call]` is raised by that call;
+    `refuse` refuses the verdicts on a repository, in the register's own words. `sent` is every verdict it was given,
+    taken or not."""
+    max_evidence = 120
+
+    def __init__(self, cfg: MemoryRegisterConfig, token: str | None):
+        self.receives = cfg.receives
+        self.token = token
+        self.advisories: dict[Id, Advisory] = {}
+        self.held: dict[tuple[str, Id], tuple[str, str]] = {}  # (the repository's address, advisory): its latest
+        self.sent: list[tuple[Advisory, RepoAt, str, str]] = []
+        self.refuse: dict[str, str] = {}
+        self.fail: dict[str, ServiceError] = {}
+
+    def add(self, advisory: Advisory) -> None:
+        self.advisories[advisory.id] = advisory
+
+    def _fail(self, call: str) -> None:
+        if call in self.fail:
+            raise self.fail[call]
+
+    def open(self) -> list[Advisory]:
+        self._fail("open")
+        return list(self.advisories.values())
+
+    def send(self, advisory: Advisory, repo: RepoAt, verdict: str, evidence: str) -> None:
+        self.sent.append((advisory, repo, verdict, evidence))
+        self._fail("send")
+        if repo.path in self.refuse:
+            raise BadRequest("memregister", "the verdict was refused", 422, self.refuse[repo.path])
+        self.held[repo.url, advisory.id] = (verdict, evidence)
+
+    def latest(self, advisory: Id, repo: RepoAt) -> tuple[str, str] | None:
+        return self.held.get((repo.url, advisory))
+
+    def check(self, scope: str, post: bool) -> list[Check]:
+        self._fail("check")
+        return [Check("memregister", "ok", f"covers {scope}" + (", takes verdicts" if post else ""))]
+
+    def close(self) -> None:
+        pass
+
+
+REGISTER = RegisterType(config=MemoryRegisterConfig,
+                        build=lambda cfg, token, http, transport=None: MemoryRegister(cfg, token))

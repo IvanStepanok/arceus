@@ -22,7 +22,9 @@ from arceus_runner.db import ACTIVE_STATES, RUN_HOLDS, RUN_UNDER_WAY, ReviewStor
 
 # A pass ends at least every poll interval; this long without one means the loop is stuck in a call.
 STUCK_AFTER = 15 * 60
-RUN_WORDS = {"qa": ("Platform test", "Testing the platform"), "arch": ("Architecture review", "Reviewing the architecture")}
+RUN_WORDS = {"qa": ("Platform test", "Testing the platform"),
+             "arch": ("Architecture review", "Reviewing the architecture"),
+             "secops": ("Advisory triage", "Triaging advisories")}
 STATE_WORDS = {"claimed": "Starting", "dispatched": "Agent working", "publishing": "Opening merge requests",
                "needs_input": "Question for people", "security_hold": "Held by the security screen",
                "code_review": "In code review", "failed": "Failed", "done": "Done", "stopped": "Stopped"}

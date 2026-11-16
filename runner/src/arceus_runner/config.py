@@ -100,8 +100,8 @@ class Strict(BaseModel):
     _retired: tuple[str, ...] = PrivateAttr(())
 
 
-def _env_name(v: str) -> str:
-    if not _ENV_NAME.match(v):
+def _env_name(v: str | None) -> str | None:
+    if v is not None and not _ENV_NAME.match(v):  # None: an optional name left empty (`token_env:`), none given
         raise ValueError(f"{v!r} is not an environment variable name (A-Z, 0-9, _)")
     return v
 
@@ -262,6 +262,28 @@ class CodeHostConfig(Strict):
         if self.approver and self.approver.token_env == self.token_env:
             raise ValueError("approver.token_env must name the approver's own token, not the bot's")
         return self
+
+
+class AdvisoryRegisterConfig(Strict):
+    """The `secops.register:` section: which advisory register advisory triage reads (integrations.AdvisoryRegister).
+    A provider (advisory_files.py) subclasses it with its own keys; `type` says which provider."""
+    type: str
+    token_env: str | None = None  # a register that needs a secret names it in secrets.env; the agent never sees it
+
+    _check_env = field_validator("token_env")(_env_name)
+
+
+def _provider_section(kind: str, example: str, lookup: str):
+    """The section's provider model, picked by its `type:` (integrations.py: `lookup` finds it), validated as that
+    model."""
+    def pick(cls, value, handler):
+        if not isinstance(value, dict):
+            return handler(value)
+        if "type" not in value:
+            raise ValueError(f"type: required: which {kind} this is, e.g. {example}")
+        from arceus_runner import integrations
+        return getattr(integrations, lookup)(value["type"]).config.model_validate(value)
+    return classmethod(pick)
 
 
 class SlackNotify(Strict):
@@ -590,6 +612,13 @@ class QaConfig(Strict):
     port: int = Field(default=3300, ge=0, le=65535)  # 0: any free port (tests). Loki has 3100, Grafana 3000
 
 
+def _repo_patterns(v: list[str]) -> list[str]:
+    if any(not p.strip() or p.startswith("/") or p.count(":") > 1 for p in v):
+        raise ValueError("patterns are paths in the group, `repo` or `repo:path`: no empty ones, none starting "
+                         "with /, at most one :")
+    return v
+
+
 class ArchitectConfig(Strict):
     """The agent reviews how the code fits together (architect.py): `arceus-runner arch run`, or `schedule`, queues
     a review of the repositories that changed since the last one; each run gets a report of its own under `reports`,
@@ -619,13 +648,39 @@ class ArchitectConfig(Strict):
     address: str = "127.0.0.1"            # the reports page; never open it outside
     port: int = Field(default=3301, ge=0, le=65535)  # 0: any free port (tests). The test runs' page has 3300
 
-    @field_validator("repos", "skip", "not_ours")
-    @classmethod
-    def _patterns(cls, v: list[str]) -> list[str]:
-        if any(not p.strip() or p.startswith("/") or p.count(":") > 1 for p in v):
-            raise ValueError("patterns are paths in the group, `repo` or `repo:path`: no empty ones, none starting "
-                             "with /, at most one :")
-        return v
+    _patterns = field_validator("repos", "skip", "not_ours")(_repo_patterns)
+
+
+class SecOpsConfig(Strict):
+    """The agent reads the code against the open advisories of the company's advisory register (secops.py):
+    `arceus-runner secops run`, or `schedule`, queues a triage run; the agent gives a verdict per advisory and
+    repository, the runner sends them to the register when `post` says so, and each run gets a report under
+    `reports`, served on `address:port` also while the console is on (it has no section for these yet)."""
+    enabled: bool = False
+    # `register:` in config.yaml (`register` is a name pydantic keeps): `type` and the provider's keys
+    register_section: AdvisoryRegisterConfig | None = Field(default=None, alias="register")
+    # Optional: the team's notes on its stack (what is deployed where, which repositories are legacy).
+    instructions: ExpandedPath = Path("~/arceus/data/secops/instructions.md").expanduser()
+    reports: ExpandedPath = Path("~/arceus/data/secops/runs").expanduser()
+    schedule: RunSchedule | None = None   # none: runs start only by the command
+    timeout: Duration = timedelta(hours=4)
+    repos: list[str] = []   # which repositories are checked: patterns as architect.repos; empty: every one
+    skip: list[str] = []    # never checked
+    post: bool = False      # false: the verdicts stay in the run's report; true: they go to the register
+    slack: bool = False     # false: the project's channel hears nothing of these runs (events.jsonl still has them)
+    address: str = "127.0.0.1"            # the reports page; never open it outside
+    port: int = Field(default=3302, ge=0, le=65535)
+
+    _patterns = field_validator("repos", "skip")(_repo_patterns)
+    _register = field_validator("register_section", mode="wrap")(
+        _provider_section("advisory register", "files", "register_type"))
+
+    @model_validator(mode="after")
+    def _required(self) -> SecOpsConfig:
+        if self.enabled and self.register_section is None:
+            raise ValueError("register: required when enabled: which advisory register to read, like "
+                             "{type: files, advisories: ~/arceus/data/secops/advisories}")
+        return self
 
 
 class CleanupProtect(Strict):
@@ -776,20 +831,6 @@ class Paths(Strict):
     project_notes: ExpandedPath | None = None
 
 
-def _provider_section(kind: str):
-    """The section's provider model, picked by its `type:` (integrations.py), validated as that model."""
-    def pick(cls, value, handler):
-        if not isinstance(value, dict):
-            return handler(value)
-        if "type" not in value:
-            raise ValueError(f"type: required: which {kind} this is, e.g. "
-                             f"{'youtrack' if kind == 'issue tracker' else 'gitlab'}")
-        from arceus_runner import integrations
-        find = integrations.tracker_type if kind == "issue tracker" else integrations.code_host_type
-        return find(value["type"]).config.model_validate(value)
-    return classmethod(pick)
-
-
 class Config(Strict):
     project: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")
     # observe: read the tracker and the code host, log what would happen, change nothing.
@@ -807,6 +848,7 @@ class Config(Strict):
     review_agent: ReviewAgentConfig = ReviewAgentConfig()
     qa: QaConfig = QaConfig()
     architect: ArchitectConfig = ArchitectConfig()
+    secops: SecOpsConfig = SecOpsConfig()
     cleanup: CleanupConfig = CleanupConfig()
     console: ConsoleConfig = ConsoleConfig()
     metrics: MetricsConfig = MetricsConfig()
@@ -817,8 +859,8 @@ class Config(Strict):
         """Keys config.yaml still writes that no longer do anything, each with what to do about it."""
         return [*self.schedule._retired, *self.limits._retired]
 
-    _tracker = field_validator("tracker", mode="wrap")(_provider_section("issue tracker"))
-    _code_host = field_validator("code_host", mode="wrap")(_provider_section("code host"))
+    _tracker = field_validator("tracker", mode="wrap")(_provider_section("issue tracker", "youtrack", "tracker_type"))
+    _code_host = field_validator("code_host", mode="wrap")(_provider_section("code host", "gitlab", "code_host_type"))
 
     @model_validator(mode="after")
     def _security(self) -> Config:
@@ -834,9 +876,15 @@ class Config(Strict):
 
     @model_validator(mode="after")
     def _report_ports(self) -> Config:
-        q, a = self.qa, self.architect
-        if q.enabled and a.enabled and q.port and q.port == a.port and q.address == a.address:
-            raise ValueError(f"qa.port and architect.port are both {q.port}: each reports page needs a port of its own")
+        seen: dict[tuple[str, int], str] = {}
+        for name in ("qa", "architect", "secops"):
+            s = getattr(self, name)
+            if not (s.enabled and s.port):
+                continue
+            if (s.address, s.port) in seen:
+                raise ValueError(f"{seen[s.address, s.port]}.port and {name}.port are both {s.port}: each reports "
+                                 "page needs a port of its own")
+            seen[s.address, s.port] = name
         return self
 
 
@@ -908,10 +956,11 @@ class Secrets:
     slack: str | None
     approver: str | None = None  # code_host.approver's token
     slack_webhook: str | None = None  # slack.webhook_env's URL: a secret as a whole and by its last part
+    register: str | None = None  # secops.register.token_env's, for an advisory register that names one
 
     def values(self) -> list[str]:
         hook = [self.slack_webhook, self.slack_webhook.rstrip("/").rsplit("/", 1)[-1]] if self.slack_webhook else []
-        return [v for v in (self.tracker, self.code_host, self.slack, self.approver, *hook) if v]
+        return [v for v in (self.tracker, self.code_host, self.slack, self.approver, self.register, *hook) if v]
 
     def __repr__(self) -> str:  # never print tokens by accident
         return "Secrets(<redacted>)"
@@ -942,6 +991,8 @@ def load_secrets(cfg: Config, environ: dict[str, str] | None = None) -> Secrets:
         wanted["slack"] = cfg.slack.token_env
     if cfg.code_host.approver:
         wanted["code_host.approver"] = cfg.code_host.approver.token_env
+    if cfg.secops.enabled and cfg.secops.register_section.token_env:
+        wanted["secops.register"] = cfg.secops.register_section.token_env
     found = {k: get(v) for k, v in wanted.items()}
     for k, v in wanted.items():
         if not found[k]:
@@ -958,4 +1009,5 @@ def load_secrets(cfg: Config, environ: dict[str, str] | None = None) -> Secrets:
     if problems:
         raise ConfigError(problems)
     return Secrets(tracker=found["tracker"], code_host=found["code_host"], slack=found.get("slack"),
-                   approver=found.get("code_host.approver"), slack_webhook=webhook)
+                   approver=found.get("code_host.approver"), slack_webhook=webhook,
+                   register=found.get("secops.register"))

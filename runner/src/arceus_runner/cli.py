@@ -1,4 +1,5 @@
-"""Command line: arceus-runner check | run | probe-bulava | doctor | cleanup | rebind | slack-test | qa | arch."""
+"""Command line: arceus-runner check | run | probe-bulava | doctor | cleanup | rebind | slack-test | qa | arch |
+secops."""
 
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from pathlib import Path
 from arceus_runner import __version__
 from arceus_runner import bulava as bulava_mod
 from arceus_runner import qa_scenarios
+from arceus_runner import secops
 from arceus_runner.checks import Check, run_online_checks
 from arceus_runner.cleanup import _human
 from arceus_runner.config import DEFAULT_CONFIG, Config, ConfigError, Secrets, load_config, load_secrets
@@ -70,8 +72,9 @@ def cmd_check(args) -> int:
     checks += qa_check(cfg)
     checks.append(architect_check(cfg))
     checks.append(project_notes_check(cfg))
+    checks += secops.check(cfg)
     if not args.offline:
-        checks += run_online_checks(cfg, secrets)
+        checks += run_online_checks(cfg, secrets, register=True)
     return EXIT_OK if _print_checks(checks, args.json) else EXIT_CHECK_FAILED
 
 
@@ -345,7 +348,8 @@ def cmd_scenario(args) -> int:
 
 # The background agents' commands: config section, what a run is called, the folder of its reports in words.
 RUN_COMMANDS = {"qa": ("qa", "test run", "No test runs yet."),
-                "arch": ("architect", "architecture review", "No architecture reviews yet.")}
+                "arch": ("architect", "architecture review", "No architecture reviews yet."),
+                "secops": ("secops", "triage run", "No triage runs yet.")}
 
 
 def cmd_runs(args) -> int:
@@ -616,7 +620,9 @@ def build_parser() -> argparse.ArgumentParser:
             ("qa", "test runs of the platform: queue one, see the latest, stop one",
              "queue a test run of a scenario"),
             ("arch", "architecture reviews: queue one, see the latest, stop one",
-             "queue a review of the repositories that changed since the last one")):
+             "queue a review of the repositories that changed since the last one"),
+            ("secops", "advisory triage: queue a run, see the latest, stop one",
+             "queue a triage run of the code against the advisory register's open advisories")):
         q = sub.add_parser(kind, help=help_)
         qsub = q.add_subparsers(dest="action", required=True)
         qr = qsub.add_parser("run", help=run_help)

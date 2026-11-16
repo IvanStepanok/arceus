@@ -104,7 +104,8 @@ bash setup/checks/console-live.sh https://console.example.com user@vm -p 22 --ow
 on, the runner no longer serves the old report pages on `qa.port` and `architect.port`: the Slack notice of a
 finished test run or architecture review links the report's page in the console instead (`public_url` + `/qa/<n>/`
 or `/architecture/<n>/`), and so do `arceus-runner qa` and `architect`. Signed out, the link opens the sign-in and
-then that report.
+then that report. Advisory triage ([secops.md](secops.md)) has no section here yet: its reports stay on the
+runner's own page, `secops.port`, through the SSH tunnel, and every link to them says so.
 
 ## Home
 

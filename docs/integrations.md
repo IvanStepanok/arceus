@@ -1,9 +1,10 @@
-# Trackers and code hosts
+# Trackers, code hosts and advisory registers
 
-The runner's flow (`loop`, `delivery`, `review`, `screening`, `cleanup`) never talks to YouTrack or GitLab directly. It talks to two interfaces, defined in [`runner/src/arceus_runner/integrations.py`](../runner/src/arceus_runner/integrations.py):
+The runner's flow (`loop`, `delivery`, `review`, `screening`, `cleanup`, `secops`) never talks to YouTrack, GitLab or an advisory register directly. It talks to three interfaces, defined in [`runner/src/arceus_runner/integrations.py`](../runner/src/arceus_runner/integrations.py):
 
 - **`IssueTracker`**: where tasks come from. The queue of tagged issues, who put the tag on, the issue's text and state, tags, comments, attachments, links and mentions.
 - **`CodeHost`**: where the repositories live. The repositories of one group, merge requests, their discussion threads, CI runs and job logs, uploads, and the bot's git credentials. Git itself is not abstracted: the workspace is plain git repositories, cloned and pushed over HTTPS.
+- **`AdvisoryRegister`**: for [advisory triage](secops.md) only, where a company keeps its open security advisories and where the verdicts on them may go. Built in: `files`, a folder of OSV records with an OpenVEX document for the verdicts, which needs no service. [Below](#adding-an-advisory-register) is how to plug in your own.
 
 `config.yaml` picks the implementation of each with `type`:
 
@@ -23,7 +24,7 @@ code_host:
   group: clients/acme
 ```
 
-The keys at the top of each section (`bot_user`, `allowed_users`, `tags`, `states`; `git_author`, `exclude_repos`, `branch_prefix`, `mr_label`) mean the same for every provider; the rest belong to the type.
+The keys at the top of each section (`bot_user`, `allowed_users`, `tags`, `states`; `git_author`, `exclude_repos`, `branch_prefix`, `mr_label`) mean the same for every provider; the rest belong to the type. The advisory register is picked the same way, in `secops.register` ([secops.md](secops.md)).
 
 ## Adding a tracker or a code host
 
@@ -56,3 +57,24 @@ Some capabilities are optional. Without them the flow keeps working, with less:
 | Assignee (`assign_to_bot`) | nothing is assigned |
 | Approval (`supports_approval`, `approve`, `revoke`; `code_host.approver`) | the review agent says what it found in a note and approves nothing |
 | Links to a file at a commit (`file_url`) | a test run's report names the suspected file and commit without a link |
+
+## Adding an advisory register
+
+A company that keeps its advisories in a service of its own (a web app, a ticket queue, a database) writes one module for it, outside this repository: Arceus ships no client for any service's API. The module has the same three parts:
+
+- the config section: a subclass of `AdvisoryRegisterConfig` with your keys (an address, a project key). A register that needs a secret sets `token_env` to the name of a variable in `secrets.env`; the runner reads it and hands it to `build`, and the agent never sees it;
+- the adapter: a class with the members of `AdvisoryRegister`, below;
+- `REGISTER = RegisterType(config=..., build=...)`, where `build(section, secret, http config, transport=None)` returns the adapter. `secops.register.type` is then the module's path, e.g. `acme_arceus.register`.
+
+What the adapter does, and nothing more; the runner keeps the rest (screening, the earlier verdicts, the send-once record, the report):
+
+| Member | What it does |
+|---|---|
+| `open()` | every open advisory, each whole, as an `Advisory`: `id` (kept as given, a number or a string), `ref`, `title`, `text` (`None` when you could not get it: the run leaves that advisory out, and its report says your `problem`), `facts` (plain JSON the agent reads as it is), `identifiers`, `severity`, `exploited`, `changed` (moves when the content does) and `url`. Paging and separate reads of a text are yours. |
+| `receives`, `max_evidence` | whether it takes verdicts at all (`False`: read-only, `post: true` is refused by `check`), and the longest evidence it takes, which the agent is told. |
+| `send(advisory, repo, verdict, evidence)` | one verdict (`affected`, `fixed`, `not_affected`, `needs_review`) for one repository. `repo` is a `RepoAt`: its path under the group, the code host's group, its address on the code host and the commit read; name the project your own way from them. |
+| `latest(advisory_id, repo)` | the verdict and evidence you hold as the repository's latest on the advisory, or `None`. Only used when the answer to a `send` was lost, so it is never sent twice. |
+| `check(scope, post)` | for `arceus-runner check`: you can be reached, the credentials are good for reading (and for receiving, with `post`), and you cover the project (`scope` is the code host's group). `arceus-runner run` never calls it. |
+| `close()` | the runner stops: close what you hold open. |
+
+Errors are `http.py`'s, as for the other two. A refusal of a verdict is `BadRequest` or `NotFound` with your register's own words in `body`: the report shows them. No answer is `TransientError`: reading is tried again for half an hour, and any other error ends the run there, saying why. While sending, every error but a refusal is tried again for an hour; then the report says which verdicts did not go. `ServiceClient` gives you the pause and backoff. The in-memory register the tests use, [`runner/tests/memory_providers.py`](../runner/tests/memory_providers.py), is a small example, and [`advisory_files.py`](../runner/src/arceus_runner/advisory_files.py) a complete one.
