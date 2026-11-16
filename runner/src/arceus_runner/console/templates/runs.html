@@ -3,7 +3,7 @@
 {% set base = "/qa/" if kind == "qa" else "/architecture/" %}
 {% block body %}
 <h1>{{ title }}</h1>
-<p class="lede">{% if kind == "qa" %}The agent tests the whole platform in a browser by the test instructions and writes a report with steps, screenshots and the suspected cause in the code.{% else %}The agent reads what changed since the last review and how it fits with the rest; Codex checks each finding before the report goes out.{% endif %}{% if schedule %} On schedule: {{ schedule.days|join(", ") }} at {{ schedule.at.strftime("%H:%M") }}.{% endif %}</p>
+<p class="lede">{% if kind == "qa" %}The agent tests the whole platform in a browser by a scenario's instructions and writes a report with steps, screenshots and the suspected cause in the code.{% else %}The agent reads what changed since the last review and how it fits with the rest; Codex checks each finding before the report goes out.{% endif %}{% if schedule %} On schedule: {{ schedule.days|join(", ") }} at {{ schedule.at.strftime("%H:%M") }}.{% endif %}</p>
 {{ flash(notice, error) }}
 {% if not enabled %}
 <p class="notice warn">{% if kind == "qa" %}Test runs{% else %}Architecture reviews{% endif %} are off in config.yaml ({{ "qa" if kind == "qa" else "architect" }}.enabled: false): none start. The earlier reports are still here.</p>
@@ -11,13 +11,45 @@
 <p class="notice warn">The runner is in mode: {{ mode }}, which starts nothing: a queued run waits until it is live.</p>
 {% endif %}
 
+{% if kind == "qa" %}
+<section class="scenarios" aria-labelledby="scenarios-h">
+  <div class="section-head">
+    <h2 id="scenarios-h">Scenarios</h2>
+    {% if can_edit and db_ok %}{% if scenarios|length < max_scenarios %}<a class="btn" href="/qa/scenarios/new">New scenario</a>{% else %}<span class="meta">{{ scenarios|length }} of {{ max_scenarios }}: delete one to add another</span>{% endif %}{% endif %}
+  </div>
+  {% if scenarios %}
+  <ul class="scenario-list">
+    {% for sc in scenarios %}
+    <li>
+      <div class="scenario-what">
+        {% if can_edit %}<a class="scenario-name" href="/qa/scenarios/{{ sc.n }}/">{{ sc.name }}</a>{% else %}<span class="scenario-name">{{ sc.name }}</span>{% endif %}
+        <span class="note">{{ sc.when }}{% if sc.next %} · next {{ sc.next }}{% endif %}</span>
+      </div>
+      <div class="scenario-do">
+        {% if sc.run %}<a class="tag {{ 'quiet' if sc.run.state == 'pending' else 'busy' }}" href="/qa/{{ sc.run.n }}/">Run {{ sc.run.n }}: {{ "queued" if sc.run.state == "pending" else "under way" }}</a>
+        {% elif can_run and enabled %}<form method="post" action="/qa/">{{ csrf_field(csrf) }}<input type="hidden" name="scenario" value="{{ sc.n }}"><button class="btn small" type="submit">Run now</button></form>{% endif %}
+        {% if can_edit %}<a class="btn small" href="/qa/scenarios/{{ sc.n }}/instructions/">Instructions</a>{% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="meta scenario-tz">Times are in {{ timezone }}. Scenarios due at once run one after the other.</p>
+  {% elif db_ok %}
+  <p class="empty">No scenarios yet.{% if can_edit %} <a href="/qa/scenarios/new">Create the first one</a>: name it, say what it tests and when it runs.{% endif %}</p>
+  {% endif %}
+</section>
+<h2 class="runs-h">Runs</h2>
+{% endif %}
+
+{% if kind != "qa" %}
 <div class="toolbar">
   {% if can_run and enabled %}
   <form method="post" action="{{ base }}">{{ csrf_field(csrf) }}<button class="btn primary" type="submit">{% if kind == "qa" %}Start a test run{% else %}Start a review{% endif %}</button></form>
   {% endif %}
-  {% if can_edit %}<a class="btn" href="{{ base }}instructions/">{% if kind == "qa" %}Test instructions{% else %}Review instructions{% endif %}</a>{% endif %}
+  {% if can_edit %}<a class="btn" href="{{ base }}instructions/">Review instructions</a>{% endif %}
   {% block extra_tools %}{% endblock %}
 </div>
+{% endif %}
 
 {% block before_list %}{% endblock %}
 
@@ -29,7 +61,7 @@
   {% for r in rows %}
   {% set under_way = r.state != "done" %}
   <tr>
-    <td class="nowrap"><a href="{{ base }}{{ r.n }}/">Run {{ r.n }}</a></td>
+    <td class="nowrap"><a href="{{ base }}{{ r.n }}/">Run {{ r.n }}</a>{% if r.scenario %}<span class="run-scenario">{{ r.scenario }}</span>{% endif %}</td>
     <td>
       {% if under_way %}
       <span class="tag {{ 'quiet' if r.state == 'pending' else 'busy' }}">{{ r.state_text }}</span>{% if r.stop_requested %} <span class="tag wait">Stop asked</span>{% endif %}
@@ -49,6 +81,6 @@
 </table>
 </div>
 {% else %}
-<p class="empty">No runs yet.{% if can_run and enabled %} Start one above.{% endif %}</p>
+<p class="empty">No runs yet.{% if can_run and enabled and (kind != "qa" or scenarios) %} Start one above.{% endif %}</p>
 {% endif %}
 {% endblock %}

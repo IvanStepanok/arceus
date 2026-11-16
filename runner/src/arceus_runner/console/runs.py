@@ -16,6 +16,7 @@ from arceus_runner.console import files, status
 from arceus_runner.console.store import ConsoleError, User, parse_iso
 from arceus_runner.console.web import Ctx, Denied, as_number
 from arceus_runner.db import RUN_HOLDS, RUN_UNDER_WAY, AgentRun, ReviewStore
+from arceus_runner.qa import scenario_name
 from arceus_runner.workspace_run import MAX_INSTRUCTIONS, read_instructions
 
 KINDS = {"qa": ("qa", "test run", "Test runs"), "arch": ("architect", "architecture review", "Architecture reviews")}
@@ -42,8 +43,9 @@ def section(cfg: Config, kind: str):
     return getattr(cfg, KINDS[kind][0])
 
 
-def start(cfg: Config, kind: str, user: User) -> int:
-    """Queue a run; returns its number. Refused while one of the kind is queued or under way, or the kind is off."""
+def start(cfg: Config, kind: str, user: User, scenario: int = 0) -> int:
+    """Queue a run (of this test scenario); returns its number. Refused while one of the kind (of the same scenario)
+    is queued or under way, or the kind is off. Runs of different scenarios queue behind each other."""
     name, noun, _ = KINDS[kind]
     if not section(cfg, kind).enabled:
         raise ConsoleError(f"{noun.capitalize()}s are off in config.yaml ({name}.enabled: false): nothing was queued.")
@@ -52,15 +54,16 @@ def start(cfg: Config, kind: str, user: User) -> int:
     except (FileNotFoundError, RuntimeError) as e:
         raise ConsoleError(f"Nothing was queued: {e}") from None
     try:
-        with store.transaction():
-            under_way = store.runs(kind, *RUN_UNDER_WAY)
-            if under_way:
-                r = under_way[0]
-                raise ConsoleError(f"Run {r.n} is {'queued' if r.state == 'pending' else 'under way'}: one at a time. "
-                                   "Stop it first to start another.")
-            run = store.add_run(kind, "command", user.email)
+        try:
+            run, busy = store.queue_run(kind, "command", user.email, scenario=scenario)
+        except LookupError:
+            raise ConsoleError("That scenario no longer exists: nothing was queued.") from None
     finally:
         store.close()
+    if busy is not None:
+        of = " of this scenario" if kind == "qa" else ""
+        raise ConsoleError(f"Run {busy.n}{of} is {'queued' if busy.state == 'pending' else 'under way'}: one at a "
+                           "time. Stop it first to start another.")
     assert run is not None
     return run.n
 
@@ -230,9 +233,10 @@ def run_view(cfg: Config, kind: str, n: int, now: float | None = None) -> dict |
                               "finds no report for it." + (f" {run.reason}" if run.reason else ""))}
         noun = status.RUN_WORDS[kind][0]
         plan_view = plan(run) if kind == "qa" else None
+        scenario = scenario_name(store, run) if kind == "qa" else ""
         return {"kind": kind, "n": n, "id": run.id, "title": f"{noun}, run {n}", "state": run.state,
                 "words": stage(run, view), "why": why, "runner": runner, "live": view,
-                "clock": clock(run, now), "plan": plan_view,
+                "clock": clock(run, now), "plan": plan_view, "scenario": scenario,
                 "fresh": ex.freshness(runner, running, view, now), "stop_asked": bool(run.stop_requested),
                 "requested_by": run.requested_by, "source": run.source, "created_at": run.created_at,
                 "started_at": run.started_at or "", "finished_at": run.finished_at or "", "updated_at": run.updated_at,

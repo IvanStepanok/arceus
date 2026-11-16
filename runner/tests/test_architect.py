@@ -693,10 +693,10 @@ def test_test_runs_recorded_before_the_shared_table_survive_the_migration(tmp_pa
     store = ReviewStore(path)
     try:
         run = store.run("qa-1")
-        assert (run.kind, run.n, run.slot, run.outcome) == ("qa", 1, "2026-11-07T02:00:00+02:00", "found")
-        assert store.add_run("qa", "schedule", "schedule", slot="2026-11-07T02:00:00+02:00") is None
+        assert (run.kind, run.n, run.slot, run.outcome, run.scenario) == ("qa", 1, "2026-11-07T02:00:00+02:00", "found", 1)
+        assert store.add_run("qa", "schedule", "schedule", slot="2026-11-07T02:00:00+02:00", scenario=1) is None
         assert store.add_run("arch", "schedule", "schedule", slot="2026-11-07T02:00:00+02:00").id == "arch-1"
-        assert store.add_run("qa", "command", "ops").id == "qa-2"
+        assert store.add_run("qa", "command", "ops", scenario=1).id == "qa-2"
     finally:
         store.close()
 

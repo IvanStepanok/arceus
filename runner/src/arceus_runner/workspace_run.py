@@ -2,11 +2,13 @@
 the code at each repository's default branch, and ends in a report of its own. The test runs of the platform (qa.py)
 and the architecture reviews (architect.py) are this with their own brief, report and outcomes.
 
-- **What starts a run.** `arceus-runner <kind> run` on the server, or the kind's `schedule` (days and a time of
-  `schedule.timezone`). Both queue the same run; only `source` tells them apart. A scheduled time is queued once
-  (`slot`), also across restarts; a time missed by more than SLOT_GRACE (the runner was down) is not made up.
+- **What starts a run.** `arceus-runner <kind> run` on the server or the console, or a schedule (days and a time of
+  `schedule.timezone`): the kind's `schedule`, or for test runs each scenario's own (`_schedules`). Both queue the same
+  run; only `source` tells them apart. A scheduled time is queued once per scenario (`slot`), also across restarts; a
+  time missed by more than SLOT_GRACE (the runner was down) is not made up.
   Nothing comes from the issue tracker: no ticket, no comment, nothing posted there.
-- **What it is told.** The operator's instructions file (its HTML comments are left out), read when the run starts
+- **What it is told.** The operator's instructions file, a test scenario's own for a test run (its HTML comments are
+  left out), read when the run starts
   and kept with the run, so a later edit never changes what a run was asked. The kind adds how to work and how to
   report (`_compose`).
 - **A task of its own.** The run is the engine task `<kind>-<n>`, started in Bulava like a code review. It holds the
@@ -28,12 +30,12 @@ import os
 import re
 import shutil
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 from arceus_runner.code_review import ReviewAgent
 from arceus_runner.config import Config
-from arceus_runner.db import RUN_UNDER_WAY, AgentRun, ReviewStore, Task
+from arceus_runner.db import AgentRun, ReviewStore, Task
 from arceus_runner.texts import ProjectNotesError, project_notes
 from arceus_runner.engine import EngineError, ReportReview
 from arceus_runner.gitops import HOME_BRANCH, GitError, restore_workspace
@@ -127,7 +129,7 @@ class WorkspaceRun:
         self.store: ReviewStore = ctx.store
         self.events = ctx.events
         self._waiting: dict[str, tuple] = {}
-        self._schedule_told: set[str] = set()
+        self._schedule_told: set[tuple[int, str]] = set()
 
     @property
     def stopped(self) -> str:
@@ -186,27 +188,35 @@ class WorkspaceRun:
     # -- the schedule ---------------------------------------------------------------------------------
 
     def queue_scheduled(self) -> None:
-        """The scheduled time of today, once it has come and for SLOT_GRACE after: a run, unless one of this kind is
-        queued or under way (it would look at the same thing twice in a row)."""
-        s = self.c.schedule
-        if not self.enabled or s is None:
+        """Each schedule's time of today, once it has come and for SLOT_GRACE after: a run, unless one of the same
+        kind and scenario is queued or under way (it would look at the same thing twice in a row). Runs of different
+        scenarios due at once are all queued, and start one after the other."""
+        if not self.enabled:
             return
         now = self.d.now().astimezone(self.cfg.schedule.tz)
-        if DAYS[now.weekday()] not in s.days:
-            return
-        slot = now.replace(hour=s.at.hour, minute=s.at.minute, second=0, microsecond=0)
-        if not slot <= now < slot + SLOT_GRACE:
-            return
-        key = slot.isoformat()
-        busy = self.store.runs(self.KIND, *RUN_UNDER_WAY)
-        if busy:
-            if key not in self._schedule_told:
-                self._schedule_told.add(key)
-                self.emit("schedule_skipped", slot=key, busy=busy[0].id)
-            return
-        run = self.store.add_run(self.KIND, "schedule", "schedule", slot=key)
-        if run:
-            self.emit("queued", task_id=run.id, run=run.n, source="schedule", slot=key)
+        for scenario, days, at in self._schedules():
+            if DAYS[now.weekday()] not in days:
+                continue
+            slot = now.replace(hour=at.hour, minute=at.minute, second=0, microsecond=0)
+            if not slot <= now < slot + SLOT_GRACE:
+                continue
+            key = slot.isoformat()
+            told = {"scenario": scenario} if scenario else {}
+            try:
+                run, busy = self.store.queue_run(self.KIND, "schedule", "schedule", slot=key, scenario=scenario)
+            except LookupError:
+                continue  # deleted between reading the schedules and now
+            if busy is not None:
+                if (scenario, key) not in self._schedule_told:
+                    self._schedule_told.add((scenario, key))
+                    self.emit("schedule_skipped", slot=key, busy=busy.id, **told)
+            elif run:
+                self.emit("queued", task_id=run.id, run=run.n, source="schedule", slot=key, **told)
+
+    def _schedules(self) -> list[tuple[int, tuple[str, ...], time]]:
+        """What queues runs by itself: the scenario (0 for a kind without them), its days and its time."""
+        s = self.c.schedule
+        return [(0, tuple(s.days), s.at)] if s is not None else []
 
     # -- starting one (the local poll) ------------------------------------------------------------
 
@@ -230,7 +240,7 @@ class WorkspaceRun:
             return  # one at a time
 
     def _prepare(self, run: AgentRun) -> None:
-        text, why = self._instructions()
+        text, why, source = self._brief_source(run)
         if text is None:
             self._close(run, "unfinished", why)
             return
@@ -270,7 +280,7 @@ class WorkspaceRun:
                       test_until=until.isoformat() if until else None)
         snapshot = {"branch": branch, "repos": repos, **extra, "text": self._compose(run, text, repos, extra),
                     "home_prev": self.git.current_branch(home) if (home / ".git").exists() else None,
-                    "instructions": {"path": str(self.c.instructions), "bytes": len(text.encode()),
+                    "instructions": {"path": str(source), "bytes": len(text.encode()),
                                      "sha256": hashlib.sha256(text.encode()).hexdigest()}}
         run = self.store.update_run(run.id, state="preparing", snapshot=json.dumps(snapshot),
                                     started_at=run.started_at, deadline=run.deadline, test_until=run.test_until)
@@ -689,6 +699,11 @@ class WorkspaceRun:
 
     def _instructions(self) -> tuple[str | None, str]:
         return read_instructions(self.c.instructions)
+
+    def _brief_source(self, run: AgentRun) -> tuple[str | None, str, Path]:
+        """The instructions this run is given, or None and why it cannot start, and the file they come from."""
+        text, why = self._instructions()
+        return text, why, self.c.instructions
 
     def _test_until(self, start: datetime) -> datetime | None:
         """When the kind's agent is told to stop its work and write the report, for a run that starts at `start`;

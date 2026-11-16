@@ -222,8 +222,8 @@ def now_dashboard():
              mappings=mapping([(3, "Reviewing architecture", SERIES[3]), (2, "Testing", SERIES[2]),
                                (1, "Working", SERIES[0]), (0, "Idle", MUTED)]),
              desc="Working while a task holds the agent (taken, in Bulava, or being published) or a code review has "
-                  "the workspace; Testing while a test run of the platform has it (arceus-runner qa run, or "
-                  "qa.schedule); Reviewing architecture while an architecture review has it (arceus-runner arch run, "
+                  "the workspace; Testing while a test run of the platform has it (the console, arceus-runner qa run, "
+                  "or a test scenario's schedule); Reviewing architecture while an architecture review has it (arceus-runner arch run, "
                   "or architect.schedule). It says nothing about whether the agent is moving; see Step, Agent quiet "
                   "and Runner loop."),
         stat("Queue", "runner_queue_length", grid(4, 0, 4, 4), color="text",

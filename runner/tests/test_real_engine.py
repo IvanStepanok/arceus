@@ -261,7 +261,7 @@ def test_a_test_run_keeps_its_own_review_of_the_report_across_a_continue(tmp_pat
                                                      "reports": str(tmp_path / "reports")}})
     w = next(gen)
     try:
-        w.store.add_run("qa", "command", "ops")
+        w.store.add_run("qa", "command", "ops", scenario=1)
         w.tick()
         rid = "qa-1"
         assert w.store.run(rid).state == "running", w.events_named("qa_step_failed", "qa_finished")
@@ -337,7 +337,7 @@ def test_a_report_longer_than_the_review_reads_is_reviewed_part_by_part(tmp_path
                                                      "reports": str(tmp_path / "reports")}})
     w = next(gen)
     try:
-        w.store.add_run("qa", "command", "ops")
+        w.store.add_run("qa", "command", "ops", scenario=1)
         w.tick()
         rid = "qa-1"
         engine = w.runner.delivery.engine

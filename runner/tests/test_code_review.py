@@ -1947,7 +1947,7 @@ def test_a_review_a_test_run_and_a_new_ticket_waiting_together_take_the_workspac
         publish(w)
         # All three at once: a code review of ACME-1, a test run, and a new ticket.
         w.yt.comment("2-1", "j.doe", "/review")
-        w.store.add_run("qa", "command", "ops")
+        w.store.add_run("qa", "command", "ops", scenario=1)
         w.yt.add_issue(2, ("b1", "j.doe", "+agent"))
 
         def holders() -> list[str]:

@@ -202,6 +202,50 @@ pre.diff span { display: block; padding: 0 14px; white-space: pre; }
 pre.diff .add { background: var(--good-soft); } pre.diff .del { background: var(--bad-soft); }
 pre.diff .ctx { color: var(--muted); }
 
+/* test scenarios: the list on Test runs and a scenario's form */
+.section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px;
+                margin: 0 0 12px; }
+.section-head h2 { margin: 0; }
+.scenario-list { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--line);
+                 border-radius: 8px; }
+.scenario-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+                    gap: 8px 16px; padding: 12px 16px; border-top: 1px solid var(--line); }
+.scenario-list li:first-child { border-top: 0; }
+.scenario-what { min-width: 0; flex: 1 1 16rem; }
+.scenario-name { font-weight: 600; overflow-wrap: anywhere; }
+.scenario-what .note { display: block; color: var(--muted); font-size: 0.875rem; }
+.scenario-do { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.scenario-do form { margin: 0; }
+.scenario-do a.tag { text-decoration: none; }
+.scenario-tz { margin: 8px 0 0; font-size: 0.85rem; }
+.runs-h { margin-top: 36px; }
+.scenario-form { max-width: 46rem; }
+.scenario-form fieldset.schedule { border: 0; border-top: 1px solid var(--line); margin: 6px 0 14px;
+                                   padding: 14px 0 0; min-width: 0; }
+.scenario-form fieldset.schedule legend { padding: 0 8px 0 0; }
+.scenario-form .note { color: var(--muted); font-size: 0.875rem; margin: 10px 0 0; }
+.day-picks { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 14px; }
+.scenario-form .schedule-lede { margin: 0 0 4px; }
+.at-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.schedule-says { margin: 12px 0 0; padding: 8px 12px; border-radius: 6px; background: var(--bg); font-size: 0.925rem;
+                 font-weight: 600; }
+.schedule-says.good { color: var(--good); background: var(--good-soft); }
+.schedule-says.warn { color: var(--warn); background: var(--warn-soft); }
+.day { position: relative; }
+.day input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.day span { display: inline-flex; align-items: center; justify-content: center; min-width: 3.25rem; min-height: 38px;
+            padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg);
+            color: var(--muted); font-size: 0.925rem; font-weight: 500; user-select: none; }
+.day input:checked + span { color: #fff; background: var(--blue); border-color: var(--blue); }
+.day input:focus-visible + span { outline: 2px solid var(--blue); outline-offset: 2px; }
+.at-row input[type=time] { display: block; width: 9rem; padding: 8px 10px; font: inherit; color: var(--ink);
+                           background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.at-row input[type=time]:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+@media (forced-colors: active) {
+  .day input { position: static; opacity: 1; }
+  .day span { border: 0; min-width: 0; padding: 0 0 0 4px; }
+}
+
 /* a task's page and a run's before its report */
 .task-title { overflow-wrap: anywhere; }
 .task-title span { font-weight: 500; color: var(--muted); }
@@ -320,6 +364,48 @@ document.addEventListener('submit', function (ev) {
   var q = (b && b.getAttribute('data-confirm')) || ev.target.getAttribute('data-confirm');
   if (q && !window.confirm(q)) ev.preventDefault();
 });
+// A test scenario's form: the line under the schedule says what the days and the time picked will do, as the server
+// will keep it (qa_scenarios.clean): both, it runs by itself; neither, only by hand; one without the other is said to
+// be missing its pair. "Clear schedule" empties both. Without the script the server says the same after saving.
+(function () {
+  var form = document.querySelector('.scenario-form');
+  var says = form && form.querySelector('[data-schedule-says]');
+  if (!says) return;
+  var at = form.querySelector('input[name="at"]');
+  var names = {mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun'};
+  var boxes = Array.prototype.slice.call(form.querySelectorAll('input[name="day"]'));
+  function show() {
+    var days = boxes.filter(function (b) { return b.checked; }).map(function (b) { return b.value; });
+    var time = at.value;
+    var text, tone = '';
+    if (days.length && time) {
+      var all = days.join(',');
+      var when = days.length === 7 ? 'Every day' : all === 'mon,tue,wed,thu,fri' ? 'Weekdays' :
+        all === 'sat,sun' ? 'Weekends' : days.map(function (d) { return names[d]; }).join(', ');
+      text = 'Runs by itself: ' + when + ' at ' + time + '.';
+      tone = 'good';
+    } else if (!days.length && !time) {
+      text = 'Runs only when someone presses "Run now".';
+    } else {
+      text = days.length ? 'Set the time too, or clear the days.' : 'Pick the days too, or clear the time.';
+      tone = 'warn';
+    }
+    says.textContent = text;
+    says.className = 'schedule-says' + (tone ? ' ' + tone : '');
+  }
+  form.addEventListener('change', show);
+  form.addEventListener('input', show);
+  var clear = form.querySelector('[data-clear-schedule]');
+  if (clear) {
+    clear.hidden = false;
+    clear.addEventListener('click', function () {
+      boxes.forEach(function (b) { b.checked = false; });
+      at.value = '';
+      show();
+    });
+  }
+  show();
+})();
 // Following the server: follow(url, every, apply) asks url every `every` ms and hands each answer to apply(html), which
 // puts it on the page and says whether it was the last (data-final). Stops while the tab is hidden; back in a shown tab
 // it asks at once. One request at a time: one that has not answered within a round is given up, so a connection that

@@ -151,14 +151,16 @@ review_agent:
   # Pattern without / matches the file name anywhere; ** crosses folders. A list here replaces the default.
   #   attention_paths: ["**/migrations/**", "*auth*", ".gitlab-ci.yml"]
 
-# Optional. The agent tests the platform by your instructions and writes a report (qa.py).
-# `arceus-runner qa run` or `schedule` queues a run; it changes nothing.
-# Reports: http://localhost:3300/ over an SSH tunnel (ssh -L 3300:127.0.0.1:3300 …).
+# Optional. The agent tests the platform by test scenarios and writes a report per run (docs/qa.md). Each scenario
+# has a name, instructions and a schedule of its own, made in the console's Test runs or with
+# `arceus-runner qa scenario`, and counts without a restart. A run changes nothing.
+# Reports: the console, or http://localhost:3300/ over an SSH tunnel (ssh -L 3300:127.0.0.1:3300 …).
 qa:
   enabled: false
-  instructions: ~/arceus/data/qa/instructions.md   # what to test; setup.sh creates a template to fill in
+  instructions: ~/arceus/data/qa/instructions.md   # the first scenario's; later ones get scenarios/<n>.md beside it
   reports: ~/arceus/data/qa/runs                   # report.html, result.json, media/ per run
-  # schedule: { days: [mon, tue, wed, thu, fri], at: "02:00" }   # in schedule.timezone
+  # max_scenarios: 20                              # scenarios that exist at once
+  # schedule: read once, to give the first scenario a schedule when upgrading; scenarios have their own now
   timeout: 8h                                      # past it the run stops, reported as unfinished
   # What one report keeps; past a limit the rest is left out and the report names it. Raise for long instructions.
   # max_checks: 1000                               # entries of what was checked

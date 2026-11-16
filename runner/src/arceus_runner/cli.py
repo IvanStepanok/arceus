@@ -12,6 +12,7 @@ from pathlib import Path
 
 from arceus_runner import __version__
 from arceus_runner import bulava as bulava_mod
+from arceus_runner import qa_scenarios
 from arceus_runner.checks import Check, run_online_checks
 from arceus_runner.cleanup import _human
 from arceus_runner.config import DEFAULT_CONFIG, Config, ConfigError, Secrets, load_config, load_secrets
@@ -23,6 +24,7 @@ from arceus_runner.events import EventLog
 from arceus_runner.integrations import build_code_host, build_tracker
 from arceus_runner.loop import IntegrationChanged, LiveModeUnavailable, make_cleanup, require_mode_ready, run
 from arceus_runner.notify import test_message, webhook_state
+from arceus_runner.qa import scenario_name
 from arceus_runner.workspace_run import read_instructions, report_address
 from arceus_runner.slack import Webhook
 
@@ -65,7 +67,7 @@ def cmd_check(args) -> int:
     probe = bulava_mod.probe(cfg.paths.bulava)
     checks.append(models_check(cfg, probe))
     checks.append(review_agent_check(cfg))
-    checks.append(qa_check(cfg))
+    checks += qa_check(cfg)
     checks.append(architect_check(cfg))
     checks.append(project_notes_check(cfg))
     if not args.offline:
@@ -87,18 +89,44 @@ def models_check(cfg: Config, probe: bulava_mod.Probe) -> Check:
     return Check("config.models", "ok", shown)
 
 
-def qa_check(cfg: Config) -> Check:
-    """Whether test runs of the platform can start: the instructions they are given, and when they run (qa.py)."""
+def qa_check(cfg: Config) -> list[Check]:
+    """Whether test runs of the platform can start: each scenario's instructions and when it runs (qa_scenarios.py),
+    as runner.db has them; before the runner made its database, the first scenario's file. And a `qa.schedule` still
+    written, which is read only once."""
     q = cfg.qa
+    out = []
+    if q.schedule is not None:
+        out.append(Check("config.qa.schedule", "warn",
+                         "qa.schedule is read only once, when the runner first starts with test scenarios and gives it "
+                         "to the first one; each scenario has its own schedule now (the console's Test runs, or "
+                         "`arceus-runner qa scenario`). Remove this block"))
     if not q.enabled:
-        return Check("config.qa", "ok", "off")
-    when = (f"`arceus-runner qa run`, and {', '.join(q.schedule.days)} at {q.schedule.at:%H:%M} "
-            f"({cfg.schedule.timezone})") if q.schedule else "`arceus-runner qa run` only"
-    text, why = read_instructions(q.instructions)
-    if text is None:
-        return Check("config.qa", "fail", f"on ({when}), but {why}: a run would only report that")
-    return Check("config.qa", "ok", f"on ({when}); instructions {q.instructions}; reports on "
-                                    f"http://{q.address}:{q.port}/")
+        return [Check("config.qa", "ok", "off"), *out]
+    try:
+        store = ReviewStore.read_only(cfg.paths.db)
+    except (FileNotFoundError, RuntimeError):
+        scenarios = None
+    else:
+        try:
+            scenarios = [(sc.name, qa_scenarios.file_of(q, sc), qa_scenarios.describe(qa_scenarios.plan_of(sc)))
+                         for sc in store.scenarios()]
+        finally:
+            store.close()
+    if scenarios is None:
+        scenarios = [("Main", q.instructions, "by hand only")]
+    if not scenarios:
+        return [Check("config.qa", "warn", "on, but there are no test scenarios: nothing runs until one is made"),
+                *out]
+    bad = []
+    for name, path, _ in scenarios:
+        text, why = read_instructions(path)
+        if text is None:
+            bad.append(f"\u201c{name}\u201d: {why}")
+    listed = "; ".join(f"{name} ({when.lower()})" for name, _, when in scenarios)
+    if bad:
+        return [Check("config.qa", "fail", f"on, but a run of {'; '.join(bad)} would only report that"), *out]
+    return [Check("config.qa", "ok", f"on; scenarios: {listed} ({cfg.schedule.timezone}); reports on "
+                                     f"http://{q.address}:{q.port}/"), *out]
 
 
 def architect_check(cfg: Config) -> Check:
@@ -231,6 +259,90 @@ def cmd_rebind(args) -> int:
     return EXIT_OK
 
 
+def _pick_scenario(store: ReviewStore, n: int | None):
+    """The scenario `qa run` queues: the one named, or the only one there is. None, and why on stderr, otherwise."""
+    live = store.scenarios()
+    if n is not None:
+        found = next((sc for sc in live if sc.n == n), None)
+        if found is None:
+            print(f"qa: there is no scenario {n}; `arceus-runner qa scenario list` shows them", file=sys.stderr)
+        return found
+    if len(live) == 1:
+        return live[0]
+    if not live:
+        print("qa: there are no test scenarios; make one in the console or with `arceus-runner qa scenario add`",
+              file=sys.stderr)
+    else:
+        names = ", ".join(f"{sc.n} ({sc.name})" for sc in live)
+        print(f"qa: there are {len(live)} scenarios, {names}: name one with --scenario N; nothing was queued",
+              file=sys.stderr)
+    return None
+
+
+def cmd_scenario(args) -> int:
+    """Test scenarios on the server, for an install without the console (qa_scenarios.py): list, add, change, delete.
+    The runner reads them on its next pass."""
+    cfg = load_config(_config_path(args.config))
+    if args.op == "list":
+        try:
+            store = ReviewStore.read_only(cfg.paths.db)
+        except (FileNotFoundError, RuntimeError) as e:
+            print(f"qa: {e}", file=sys.stderr)
+            return EXIT_CHECK_FAILED
+    else:
+        store = ReviewStore(cfg.paths.db)
+    who = os.environ.get("SUDO_USER") or getpass.getuser()
+    try:
+        if args.op == "list":
+            live = store.scenarios()
+            if not live:
+                print("No test scenarios. `arceus-runner qa scenario add NAME` makes one.")
+            for sc in live:
+                plan = qa_scenarios.plan_of(sc)
+                print(f"{sc.n}: {sc.name} ({qa_scenarios.describe(plan)}, {cfg.schedule.timezone}); "
+                      f"instructions {qa_scenarios.file_of(cfg.qa, sc)}")
+            return EXIT_OK
+        given = getattr(args, "days", None)
+        days = [d.strip() for d in given.split(",") if d.strip()] if given is not None else None
+        if args.op == "add":
+            with store.transaction():
+                sc = qa_scenarios.create(store, cfg.qa, args.name, days or [], args.at or "", who)
+            path = qa_scenarios.file_of(cfg.qa, sc)
+            print(f"Scenario {sc.n} \u201c{sc.name}\u201d made: {qa_scenarios.describe(qa_scenarios.plan_of(sc))}. "
+                  f"Write its instructions in {path}: a run without them stops at once.")
+            return EXIT_OK
+        sc = store.scenario(args.n)
+        if sc is None or sc.deleted_at:
+            print(f"qa: there is no scenario {args.n}", file=sys.stderr)
+            return EXIT_CHECK_FAILED
+        if args.op == "delete":
+            store.delete_scenario(sc.n, sc.version, who)
+            print(f"Scenario {sc.n} \u201c{sc.name}\u201d deleted; its past runs and reports stay.")
+            return EXIT_OK
+        now = qa_scenarios.plan_of(sc)
+        if args.by_hand:
+            days, args.at = [], ""
+        name, days_json, at, on = qa_scenarios.clean(
+            args.name if args.name is not None else sc.name,
+            days if days is not None else list(now.days),
+            args.at if args.at is not None else (f"{now.at:%H:%M}" if now.at else ""))
+        with store.transaction():
+            if qa_scenarios.name_taken(store, name, but=sc.n):
+                raise qa_scenarios.Invalid(f"A scenario named \u201c{name}\u201d exists already.")
+            changed = store.update_scenario(sc.n, sc.version, who, name=name, days=days_json, at=at, scheduled=on)
+        if changed is None:
+            print("qa: the scenario changed meanwhile; nothing was saved, try again", file=sys.stderr)
+            return EXIT_CHECK_FAILED
+        print(f"Scenario {changed.n} \u201c{changed.name}\u201d: "
+              f"{qa_scenarios.describe(qa_scenarios.plan_of(changed))}.")
+        return EXIT_OK
+    except qa_scenarios.Invalid as e:
+        print(f"qa: {e}", file=sys.stderr)
+        return EXIT_CHECK_FAILED
+    finally:
+        store.close()
+
+
 # The background agents' commands: config section, what a run is called, the folder of its reports in words.
 RUN_COMMANDS = {"qa": ("qa", "test run", "No test runs yet."),
                 "arch": ("architect", "architecture review", "No architecture reviews yet.")}
@@ -239,6 +351,8 @@ RUN_COMMANDS = {"qa": ("qa", "test run", "No test runs yet."),
 def cmd_runs(args) -> int:
     """Runs of a background agent (workspace_run.py): queue one, show the latest, or stop one. The runner does the
     rest."""
+    if args.action == "scenario":
+        return cmd_scenario(args)
     kind = args.kind
     section, noun, none = RUN_COMMANDS[kind]
     cfg = load_config(_config_path(args.config))
@@ -256,19 +370,28 @@ def cmd_runs(args) -> int:
         store = ReviewStore(cfg.paths.db)
     try:
         if args.action == "run":
-            under_way = store.runs(kind, *RUN_UNDER_WAY)
-            if under_way:
-                r = under_way[0]
-                print(f"{kind}: run {r.n} is {'queued' if r.state == 'pending' else 'under way'}; nothing more was "
-                      f"queued. `arceus-runner {kind} stop` stops it.", file=sys.stderr)
-                return EXIT_CHECK_FAILED
+            scenario, label = 0, ""
+            if kind == "qa":
+                picked = _pick_scenario(store, args.scenario)
+                if picked is None:
+                    return EXIT_CHECK_FAILED
+                scenario, label = picked.n, f" of the scenario \u201c{picked.name}\u201d"
             who = os.environ.get("SUDO_USER") or getpass.getuser()
-            run = store.add_run(kind, "command", who)
+            try:
+                run, busy = store.queue_run(kind, "command", who, scenario=scenario)
+            except LookupError as e:
+                print(f"{kind}: {e}; nothing was queued", file=sys.stderr)
+                return EXIT_CHECK_FAILED
+            if busy is not None:
+                print(f"{kind}: run {busy.n}{label} is {'queued' if busy.state == 'pending' else 'under way'}; nothing "
+                      f"more was queued. `arceus-runner {kind} stop {busy.n}` stops it.", file=sys.stderr)
+                return EXIT_CHECK_FAILED
+            assert run is not None
             if cfg.mode != "live":
                 print(f"{kind}: the runner is in mode: {cfg.mode}, which starts nothing; run {run.n} waits until it is "
                       "live", file=sys.stderr)
             url, tunnel = report_address(cfg, kind, c.port, run.n)
-            print(f"Run {run.n} queued. The runner starts it once the workspace is free; the report will be at "
+            print(f"Run {run.n}{label} queued. The runner starts it once the workspace is free; the report will be at "
                   f"{url}{' (through the SSH tunnel)' if tunnel else ''}.")
             return EXIT_OK
         if args.action == "stop":
@@ -295,7 +418,8 @@ def cmd_runs(args) -> int:
             what += f", {found} finding{'s' if found != 1 else ''}" if r.state == "done" and found else ""
             what += ", stop asked" if r.stop_requested and r.state != "done" else ""
             by = "schedule" if r.source == "schedule" else r.requested_by
-            print(f"run {r.n}: {what} (by {by}, queued {r.created_at}"
+            of = f" [{scenario_name(store, r)}]" if kind == "qa" else ""
+            print(f"run {r.n}{of}: {what} (by {by}, queued {r.created_at}"
                   + (f", finished {r.finished_at}" if r.finished_at else "") + ")"
                   + (f": {r.reason}" if r.reason and r.state == "done" else ""))
         url, tunnel = report_address(cfg, kind, c.port)
@@ -490,18 +614,41 @@ def build_parser() -> argparse.ArgumentParser:
 
     for kind, help_, run_help in (
             ("qa", "test runs of the platform: queue one, see the latest, stop one",
-             "queue a test run of the platform by qa.instructions"),
+             "queue a test run of a scenario"),
             ("arch", "architecture reviews: queue one, see the latest, stop one",
              "queue a review of the repositories that changed since the last one")):
         q = sub.add_parser(kind, help=help_)
         qsub = q.add_subparsers(dest="action", required=True)
-        qsub.add_parser("run", help=run_help)
+        qr = qsub.add_parser("run", help=run_help)
+        if kind == "qa":
+            qr.add_argument("--scenario", type=int, help="the scenario's number (`qa scenario list`); needed when "
+                                                          "there is more than one")
         qs = qsub.add_parser("status", help="the latest runs and how they ended")
         qs.add_argument("--last", type=int, default=10, help="how many runs (default 10)")
         qs.add_argument("--json", action="store_true")
         qx = qsub.add_parser("stop", help="stop the queued or running one (its report says what it found so far)")
         qx.add_argument("n", nargs="?", type=int, help="the run's number (default: the one under way)")
         q.set_defaults(fn=cmd_runs, kind=kind)
+        if kind == "qa":
+            sc = qsub.add_parser("scenario", help="test scenarios: list, add, change, delete (the console does the "
+                                                  "same)")
+            ssub = sc.add_subparsers(dest="op", required=True)
+            ssub.add_parser("list", help="every scenario with its schedule and instructions file")
+            for op, op_help in (("add", "make a scenario; write its instructions in the file it names"),
+                                ("set", "change a scenario's name or schedule")):
+                o = ssub.add_parser(op, help=op_help)
+                if op == "add":
+                    o.add_argument("name")
+                else:
+                    o.add_argument("n", type=int)
+                    o.add_argument("--name")
+                    o.add_argument("--by-hand", action="store_true", help="clear the days and the time: it runs "
+                                                                          "only when someone starts it")
+                o.add_argument("--days", help="mon,tue,...,sun; with --at, it runs by itself then")
+                o.add_argument("--at", help="HH:MM in schedule.timezone; with --days, it runs by itself then")
+            sd = ssub.add_parser("delete", help="delete a scenario; its past runs and reports stay")
+            sd.add_argument("n", type=int)
+            sc.set_defaults(fn=cmd_scenario)
 
     from arceus_runner.console import cli as console_cli
     console_cli.add_parser(sub)

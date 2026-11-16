@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% from "macros.html" import flash, csrf_field %}
+{% block body %}
+<p class="crumb"><a href="/qa/">Test runs</a></p>
+<h1 class="task-title">{{ title }}</h1>
+<p class="lede">{% if sc %}When this scenario runs by itself. What it tests is in its <a href="/qa/scenarios/{{ sc.n }}/instructions/">instructions</a>.{% else %}A test run of its own: a name, what it tests and when it runs by itself. "Run now" on the list starts it at any time.{% endif %}</p>
+{{ flash(notice, error) }}
+{% if saved_now %}<p class="meta">Saved now: {{ saved_now }}.</p>{% endif %}
+<form class="card scenario-form" method="post" action="{{ '/qa/scenarios/%d/' % sc.n if sc else '/qa/scenarios/new' }}">
+  {{ csrf_field(csrf) }}
+  {% if sc %}<input type="hidden" name="version" value="{{ version }}">{% endif %}
+  <div class="form-row">
+    <label for="name">Name</label>
+    <input id="name" name="name" type="text" maxlength="{{ max_name }}" value="{{ v.name }}" required autocomplete="off" placeholder="Smoke">
+  </div>
+  <fieldset class="schedule">
+    <legend class="label">Schedule</legend>
+    <p class="note schedule-lede">Pick days and a time and the scenario runs by itself then. Leave both empty and it runs only when someone presses "Run now".</p>
+    <div class="day-picks" role="group" aria-label="Days">
+      {% for d in days %}
+      <label class="day"><input type="checkbox" name="day" value="{{ d }}"{% if d in v.days %} checked{% endif %}><span>{{ day_words[d] }}</span></label>
+      {% endfor %}
+    </div>
+    <div class="form-row at-row">
+      <label for="at">Time <span class="hint">In {{ timezone }}.</span></label>
+      <div class="at-pick">
+        <input id="at" name="at" type="time" value="{{ v.at }}" step="60">
+        <button class="btn small" type="button" data-clear-schedule hidden>Clear schedule</button>
+      </div>
+    </div>
+    <p class="schedule-says" data-schedule-says role="status">{% if v.days and v.at %}Runs by itself on the days and at the time picked.{% elif not v.days and not v.at %}Runs only when someone presses "Run now".{% endif %}</p>
+    <p class="note">"Run now" works either way. A scheduled time that comes while the same scenario is still queued or running is skipped.</p>
+  </fieldset>
+  {% if not sc %}
+  <div class="form-row">
+    <label for="text">Instructions <span class="hint">The platform's address, its test accounts and what to test, in any shape. Text inside &lt;!-- --&gt; is left out. At most {{ limit // 1024 }} KB.</span></label>
+    <textarea class="code" id="text" name="text" spellcheck="false" required>{{ text }}</textarea>
+  </div>
+  {% endif %}
+  <div class="form-end inline-form">
+    <button class="btn primary" type="submit">{{ "Save" if sc else "Create scenario" }}</button>
+    <a class="btn" href="/qa/">Cancel</a>
+  </div>
+</form>
+{% if sc %}
+<section class="card">
+  <h2>Instructions</h2>
+  <p class="note"><code class="lit">{{ path }}</code></p>
+  <p><a class="btn" href="/qa/scenarios/{{ sc.n }}/instructions/">Edit the instructions</a></p>
+</section>
+<form class="card" method="post" action="/qa/scenarios/{{ sc.n }}/delete">
+  {{ csrf_field(csrf) }}
+  <input type="hidden" name="version" value="{{ version }}">
+  <h2>Delete</h2>
+  <p class="note">The scenario stops running and leaves the list. Its past runs and reports stay. A run of it that is still queued does not start; one under way finishes.</p>
+  <button class="btn danger" type="submit" data-confirm="Delete the scenario &ldquo;{{ sc.name }}&rdquo;? Its past reports stay.">Delete scenario</button>
+</form>
+{% endif %}
+{% endblock %}

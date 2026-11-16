@@ -47,7 +47,7 @@ def w(tmp_path: Path):
     make_admin(settings)
 
     store = ReviewStore(tmp_path / "runner.db")
-    run = store.add_run("qa", "schedule", "schedule")
+    run = store.add_run("qa", "schedule", "schedule", scenario=1)
     store.update_run(run.id, state="done", outcome="found", started_at="2026-11-08T06:00:00Z",
                      finished_at="2026-11-08T07:40:00Z",
                      result=json.dumps({"summary": "Signing in is broken.", "findings": [{}]}))
@@ -83,9 +83,10 @@ def test_the_list_shows_every_run_and_a_queued_one_at_once(w):
     page = viewer.get("/qa/").text
     assert "Run 1" in page and "1 problem found" in page and "Signing in is broken." in page
     assert 'href="/qa/1/"' in page and "Schedule" in page
-    assert "Start a test run" not in page and "Test instructions" not in page  # no role: no buttons
+    assert "Run now" not in page and "New scenario" not in page and "Instructions</a>" not in page  # no role
+    assert "Main" in page and "By hand only" in page
     s = ReviewStore(w.tmp / "runner.db")
-    s.add_run("qa", "command", "q@example.com")
+    s.add_run("qa", "command", "q@example.com", scenario=1)
     s.close()
     page = viewer.get("/qa/").text
     assert "Run 2" in page and "Queued" in page and "q@example.com" in page
@@ -97,7 +98,7 @@ def test_with_qa_off_the_old_reports_stay_and_the_page_says_why_none_start(w):
     qa = person(w.settings, "q@example.com", {"qa"})
     page = qa.get("/qa/").text
     assert "off in config.yaml" in page and "Run 1" in page
-    assert "Start a test run" not in page
+    assert "Run now" not in page
     r = qa.post("/qa/", data={"csrf": csrf_of(page)})
     assert r.status_code == 400 and "nothing was queued" in r.text
 
@@ -154,14 +155,17 @@ def test_only_the_reports_own_files_are_served(w, path):
 
 def test_qa_starts_and_stops_a_run_and_it_records_who_asked(w):
     qa = person(w.settings, "q@example.com", {"qa"})
-    r = post(qa, "/qa/", {})
+    r = post(qa, "/qa/", {"scenario": "1"})
     assert r.status_code == 303 and "Run+2+queued" in r.headers["location"]
     s = ReviewStore.read_only(w.tmp / "runner.db")
     run = s.run("qa-2")
     assert run.state == "pending" and run.source == "command" and run.requested_by == "q@example.com"
+    assert run.scenario == 1
     s.close()
+    r = post(qa, "/qa/", {"scenario": "1"})
+    assert r.status_code == 400 and "Run 2 of this scenario is queued: one at a time" in r.text
     r = post(qa, "/qa/", {})
-    assert r.status_code == 400 and "Run 2 is queued: one at a time" in r.text
+    assert r.status_code == 400 and "Pick the scenario to run" in r.text
     r = post(qa, "/qa/2/stop", {}, page="/qa/")
     assert r.status_code == 303
     s = ReviewStore.read_only(w.tmp / "runner.db")
@@ -187,35 +191,35 @@ def test_the_instructions_are_edited_by_qa_and_hidden_from_everyone_else(w):
     w.instructions.chmod(0o640)
     for roles in (set(), {"architect"}, {"operator"}):
         c = person(w.settings, f"x{'-'.join(sorted(roles))}@example.com", roles)
-        r = c.get("/qa/instructions/")
+        r = c.get("/qa/scenarios/1/instructions/")
         assert r.status_code == 403 and "hunter2" not in r.text
     qa = person(w.settings, "q@example.com", {"qa"})
-    page = qa.get("/qa/instructions/").text
+    page = qa.get("/qa/scenarios/1/instructions/").text
     assert "hunter2" in page and "bytes of instructions" in page
-    r = post(qa, "/qa/instructions/", {"text": "https://staging.example.com\r\nadmin / swordfish\r\n",
+    r = post(qa, "/qa/scenarios/1/instructions/", {"text": "https://staging.example.com\r\nadmin / swordfish\r\n",
                                        "sha": re.search(r'name="sha" value="([^"]+)"', page).group(1),
                                        "note": "new password"})
     assert r.status_code == 303
     assert w.instructions.read_text() == "https://staging.example.com\nadmin / swordfish\n"
     assert w.instructions.stat().st_mode & 0o777 == 0o640  # the file keeps its own mode
     assert not list(w.instructions.parent.glob(".*tmp"))  # no temporary file left beside it
-    page = qa.get("/qa/instructions/").text
+    page = qa.get("/qa/scenarios/1/instructions/").text
     assert "new password" in page and "Quinn" not in page
 
 
 def test_a_save_over_a_newer_version_is_refused_with_the_difference(w):
     w.instructions.write_text("first\n")
     qa = person(w.settings, "q@example.com", {"qa"})
-    page = qa.get("/qa/instructions/").text
+    page = qa.get("/qa/scenarios/1/instructions/").text
     sha = re.search(r'name="sha" value="([^"]+)"', page).group(1)
     w.instructions.write_text("changed over SSH\n")  # someone else, meanwhile
-    r = qa.post("/qa/instructions/", data={"csrf": csrf_of(page), "sha": sha, "text": "mine\n"})
+    r = qa.post("/qa/scenarios/1/instructions/", data={"csrf": csrf_of(page), "sha": sha, "text": "mine\n"})
     assert r.status_code == 409 and "Someone changed the file" in r.text
     assert "-changed over SSH" in r.text and "+mine" in r.text
     assert w.instructions.read_text() == "changed over SSH\n"
     # The page now carries the new version's hash: saving again replaces it, knowingly.
     sha2 = re.search(r'name="sha" value="([^"]+)"', r.text).group(1)
-    r = qa.post("/qa/instructions/", data={"csrf": csrf_of(r.text), "sha": sha2, "text": "mine\n"})
+    r = qa.post("/qa/scenarios/1/instructions/", data={"csrf": csrf_of(r.text), "sha": sha2, "text": "mine\n"})
     assert r.status_code == 303 and w.instructions.read_text() == "mine\n"
 
 
@@ -223,19 +227,199 @@ def test_every_saved_version_is_kept_and_an_earlier_one_comes_back(w):
     w.instructions.write_text("v1\n")
     admin = signed_in(w.settings, "owner@example.com")
     for text in ("v2\n", "v3\n"):
-        page = admin.get("/qa/instructions/").text
-        post(admin, "/qa/instructions/", {"text": text, "sha": re.search(r'name="sha" value="([^"]+)"', page).group(1)})
+        page = admin.get("/qa/scenarios/1/instructions/").text
+        post(admin, "/qa/scenarios/1/instructions/", {"text": text, "sha": re.search(r'name="sha" value="([^"]+)"', page).group(1)})
     with ConsoleStore(w.settings.db_path) as cs:
         versions = cs.versions("qa.instructions")
     assert [v["after_text"] for v in versions] == ["v3\n", "v2\n"]
     assert versions[1]["before_text"] == "v1\n" and versions[0]["actor"].startswith("Owner")
-    page = admin.get(f"/qa/instructions/?version={versions[1]['id']}").text
+    page = admin.get(f"/qa/scenarios/1/instructions/?version={versions[1]['id']}").text
     assert "It is not saved yet" in page and ">v2\n</textarea>" in page
 
 
 def test_the_page_warns_when_the_agent_would_get_nothing(w):
     w.instructions.write_text("<!-- comments only -->\n")
     qa = person(w.settings, "q@example.com", {"qa"})
-    page = qa.get("/qa/instructions/").text
+    page = qa.get("/qa/scenarios/1/instructions/").text
     assert "is empty (comments only)" in page and "a run would stop at once" in page
 
+
+
+# -- scenarios ---------------------------------------------------------------------------------------------------
+
+def new_scenario(c: TestClient, **fields):
+    page = c.get("/qa/scenarios/new").text
+    data = {"csrf": csrf_of(page), "name": "Smoke", "day": ["mon", "fri"], "at": "07:30",
+            "text": "https://staging.example.com\nSign in and open the dashboard.\n"} | fields
+    return c.post("/qa/scenarios/new", data=data, follow_redirects=False)
+
+
+def test_qa_makes_scenarios_each_with_its_name_schedule_and_instructions(w):
+    qa = person(w.settings, "q@example.com", {"qa"})
+    r = new_scenario(qa)
+    assert r.status_code == 303 and "Smoke" in r.headers["location"]
+    r = new_scenario(qa, name="Regression", day=["sat"], at="2:00", text="Everything, slowly.\n")
+    assert r.status_code == 303
+    r = new_scenario(qa, name="Payments", day=[], at="", text="Pay with the test card.\n")
+    assert r.status_code == 303
+    s = ReviewStore.read_only(w.tmp / "runner.db")
+    by_name = {sc.name: sc for sc in s.scenarios()}
+    s.close()
+    assert list(by_name) == ["Main", "Smoke", "Regression", "Payments"]
+    smoke, reg, pay = by_name["Smoke"], by_name["Regression"], by_name["Payments"]
+    assert (json.loads(smoke.days), smoke.at, smoke.scheduled) == (["mon", "fri"], "07:30", 1)
+    assert (json.loads(reg.days), reg.at, reg.scheduled) == (["sat"], "02:00", 1)
+    assert pay.scheduled == 0
+    folder = w.tmp / "qa" / "scenarios"
+    assert (folder / f"{smoke.n}.md").read_text() == "https://staging.example.com\nSign in and open the dashboard.\n"
+    assert (folder / f"{reg.n}.md").read_text() == "Everything, slowly.\n"
+    page = qa.get("/qa/").text
+    for words in ("Smoke", "Mon, Fri at 07:30", "Regression", "Sat at 02:00", "Payments", "By hand only",
+                  "Times are in Europe/Kyiv", "New scenario"):
+        assert words in page, words
+    assert page.count("Run now") == 4
+    # Opened again, the form has what was saved.
+    page = qa.get(f"/qa/scenarios/{smoke.n}/").text
+    assert 'value="Smoke"' in page and 'value="07:30"' in page
+    assert 'value="mon" checked' in page and 'value="fri" checked' in page and 'value="tue" checked' not in page
+    # No separate switch: days and a time are the schedule, and the form says what they do.
+    assert 'name="scheduled"' not in page and "Runs by itself on the days and at the time picked." in page
+    page = qa.get(f"/qa/scenarios/{pay.n}/").text
+    assert 'Runs only when someone presses "Run now".' in page
+    # Its instructions open in the versioned editor, under a history of their own.
+    page = qa.get(f"/qa/scenarios/{smoke.n}/instructions/").text
+    assert "Sign in and open the dashboard." in page and "Instructions: Smoke" in page
+    with ConsoleStore(w.settings.db_path) as cs:
+        assert [v["note"] for v in cs.versions(f"qa.instructions.{smoke.n}")] == ["Scenario created"]
+        assert cs.versions("qa.instructions") == []
+
+
+@pytest.mark.parametrize("fields, words", [
+    ({"name": "  "}, "Give the scenario a name"),
+    ({"name": "main"}, "exists already"),
+    ({"day": []}, "Pick the days to run on, or clear the time"),
+    ({"at": ""}, "Set the time to run at, or clear the days"),
+    ({"at": "25:00"}, "The time is HH:MM"),
+    ({"day": ["mon", "someday"]}, "Unknown day"),
+    ({"text": "<!-- only a comment -->"}, "Write what the scenario tests"),
+])
+def test_a_scenario_that_cannot_be_kept_is_refused_with_the_text_still_in_the_form(w, fields, words):
+    qa = person(w.settings, "q@example.com", {"qa"})
+    r = new_scenario(qa, **fields)
+    assert r.status_code == 400 and words in r.text
+    s = ReviewStore.read_only(w.tmp / "runner.db")
+    assert [sc.name for sc in s.scenarios()] == ["Main"]
+    s.close()
+    assert not (w.tmp / "qa" / "scenarios").exists()
+    if "text" not in fields:
+        assert "Sign in and open the dashboard." in r.text
+
+
+def test_no_more_scenarios_than_the_limit(w):
+    w.raw["qa"]["max_scenarios"] = 2
+    w.config.write_text(yaml.safe_dump(w.raw))
+    qa = person(w.settings, "q@example.com", {"qa"})
+    assert new_scenario(qa).status_code == 303
+    page = qa.get("/qa/").text
+    assert "New scenario" not in page and "2 of 2" in page
+    r = new_scenario(qa, name="Regression")
+    assert r.status_code == 400 and "qa.max_scenarios" in r.text
+
+
+def test_a_scenario_is_changed_and_a_save_over_a_newer_one_is_refused(w):
+    qa = person(w.settings, "q@example.com", {"qa"})
+    new_scenario(qa)
+    page = qa.get("/qa/scenarios/2/").text
+    token, version = csrf_of(page), re.search(r'name="version" value="(\d+)"', page).group(1)
+    other = person(w.settings, "q2@example.com", {"qa"})
+    page2 = other.get("/qa/scenarios/2/").text
+    r = other.post("/qa/scenarios/2/", data={"csrf": csrf_of(page2), "version": version, "name": "Smoke test",
+                                             "day": ["tue"], "at": "08:00"},
+                   follow_redirects=False)
+    assert r.status_code == 303
+    r = qa.post("/qa/scenarios/2/", data={"csrf": token, "version": version, "name": "Smoke",
+                                          "day": ["wed"], "at": "09:00"}, follow_redirects=False)
+    assert r.status_code == 409 and "Someone changed this scenario" in r.text
+    assert "Smoke test" in r.text and 'value="wed" checked' in r.text  # theirs said, mine kept in the form
+    s = ReviewStore.read_only(w.tmp / "runner.db")
+    sc = s.scenario(2)
+    s.close()
+    assert (sc.name, json.loads(sc.days), sc.at, sc.scheduled) == ("Smoke test", ["tue"], "08:00", 1)
+    # Saved again from the refused page, knowingly.
+    version = re.search(r'name="version" value="(\d+)"', r.text).group(1)
+    r = qa.post("/qa/scenarios/2/", data={"csrf": csrf_of(r.text), "version": version, "name": "Smoke",
+                                          "day": ["wed"], "at": "09:00"}, follow_redirects=False)
+    assert r.status_code == 303 and "wed+at+09%3A00" in r.headers["location"]
+    # Days and time cleared: it runs only by hand.
+    page = qa.get("/qa/scenarios/2/").text
+    r = qa.post("/qa/scenarios/2/", data={"csrf": csrf_of(page), "name": "Smoke", "at": "",
+                                          "version": re.search(r'name="version" value="(\d+)"', page).group(1)},
+                follow_redirects=False)
+    assert r.status_code == 303 and "by+hand+only" in r.headers["location"]
+    s = ReviewStore.read_only(w.tmp / "runner.db")
+    sc = s.scenario(2)
+    s.close()
+    assert (json.loads(sc.days), sc.at, sc.scheduled) == ([], None, 0)
+
+
+def test_a_deleted_scenario_leaves_the_list_and_its_past_runs_keep_its_name(w):
+    qa = person(w.settings, "q@example.com", {"qa"})
+    new_scenario(qa)
+    post(qa, "/qa/", {"scenario": "2"})
+    page = qa.get("/qa/scenarios/2/").text
+    r = qa.post("/qa/scenarios/2/delete", data={"csrf": csrf_of(page),
+                                                "version": re.search(r'name="version" value="(\d+)"', page).group(1)},
+                follow_redirects=False)
+    assert r.status_code == 303 and "deleted" in r.headers["location"]
+    page = qa.get("/qa/").text
+    assert 'href="/qa/scenarios/2/"' not in page
+    assert '<span class="run-scenario">Smoke</span>' in page  # its queued run still says whose it is
+    assert qa.get("/qa/scenarios/2/").status_code == 404
+    assert qa.get("/qa/scenarios/2/instructions/").status_code == 404
+    r = post(qa, "/qa/", {"scenario": "2"})
+    assert r.status_code == 400 and "no longer exists" in r.text
+
+
+def test_only_qa_and_admins_make_change_or_delete_scenarios(w):
+    for roles in (set(), {"architect"}, {"operator"}):
+        c = person(w.settings, f"{'-'.join(sorted(roles)) or 'none'}@example.com", roles)
+        token = csrf_of(c.get("/qa/").text)
+        assert c.get("/qa/scenarios/new").status_code == 403
+        assert c.get("/qa/scenarios/1/").status_code == 403
+        assert c.post("/qa/scenarios/new", data={"csrf": token, "name": "X", "text": "x"}).status_code == 403
+        assert c.post("/qa/scenarios/1/", data={"csrf": token, "name": "X", "version": "1"}).status_code == 403
+        assert c.post("/qa/scenarios/1/delete", data={"csrf": token, "version": "1"}).status_code == 403
+        assert c.get("/qa/instructions/").status_code == 403
+    s = ReviewStore.read_only(w.tmp / "runner.db")
+    assert [(sc.name, sc.version) for sc in s.scenarios()] == [("Main", 1)]
+    s.close()
+
+
+def test_the_old_address_of_the_instructions_opens_the_first_scenario_s(w):
+    qa = person(w.settings, "q@example.com", {"qa"})
+    r = qa.get("/qa/instructions/", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/qa/scenarios/1/instructions/"
+
+
+def test_the_command_queues_a_named_scenario_and_asks_which_when_there_are_several(w, capsys):
+    from arceus_runner import cli
+    args = ["--config", str(w.config), "qa"]
+    assert cli.main([*args, "scenario", "add", "Smoke", "--days", "mon,fri", "--at", "07:30"]) == 0
+    out = capsys.readouterr().out
+    assert "Scenario 2 \u201cSmoke\u201d made: Mon, Fri at 07:30" in out and "scenarios/2.md" in out
+    assert cli.main([*args, "run"]) == 1
+    assert "name one with --scenario N" in capsys.readouterr().err
+    assert cli.main([*args, "run", "--scenario", "2"]) == 0
+    assert "\u201cSmoke\u201d queued" in capsys.readouterr().out
+    assert cli.main([*args, "run", "--scenario", "2"]) == 1
+    assert "is queued; nothing more was queued" in capsys.readouterr().err
+    assert cli.main([*args, "run", "--scenario", "1"]) == 0  # another scenario queues behind it
+    assert cli.main([*args, "scenario", "set", "2", "--by-hand"]) == 0
+    assert "By hand only" in capsys.readouterr().out
+    assert cli.main([*args, "status"]) == 0
+    out = capsys.readouterr().out
+    assert "run 2 [Smoke]: pending" in out and "run 3 [Main]: pending" in out
+    assert cli.main([*args, "scenario", "delete", "2"]) == 0
+    capsys.readouterr()
+    assert cli.main([*args, "scenario", "list"]) == 0
+    assert "Smoke" not in capsys.readouterr().out

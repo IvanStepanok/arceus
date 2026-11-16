@@ -1,12 +1,13 @@
-"""Test runs of the whole platform: the agent tests it in a browser by the operator's instructions and reports.
+"""Test runs of the whole platform: the agent tests it in a browser by a test scenario's instructions and reports.
 
-Off unless `qa.enabled`. A run is queued by `arceus-runner qa run` or `qa.schedule` and holds the shared workspace
-like every background agent (workspace_run.py: the schedule, the engine task `qa-<n>`, the branches
-`arceus-qa/<n>`, putting the workspace back). What is its own:
+Off unless `qa.enabled`. A run is of one test scenario (qa_scenarios.py: its name, instructions file and schedule,
+kept in runner.db). It is queued by the console, by `arceus-runner qa run --scenario <n>` or by the scenario's
+schedule, and holds the shared workspace like every background agent (workspace_run.py: the schedule, the engine
+task `qa-<n>`, the branches `arceus-qa/<n>`, putting the workspace back). What is its own:
 
-- **What it is told.** The operator's file, `qa.instructions`: the platform's URL, its test accounts, what to test,
-  in whatever shape they like (config/qa-instructions.example.md). A run without it does not start. The runner
-  adds how to work and how to report (`_compose`).
+- **What it is told.** The scenario's file: the platform's URL, its test accounts, what to test, in whatever shape
+  they like (config/qa-instructions.example.md). A run without it does not start, nor one whose scenario was deleted
+  before it started. The runner adds how to work and how to report (`_compose`), and names the scenario.
 - **What comes back.** The agent writes `findings.json` and its screenshots into `.arceus/qa/qa-<n>/` in the
   workspace. The runner reads them defensively (load_findings: known fields, bounded text, real images only),
   copies what holds into the run's folder under `qa.reports`, and renders `report.html` there (qa_report.py).
@@ -24,14 +25,14 @@ import os
 import re
 import stat
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
-from arceus_runner import media, qa_report
+from arceus_runner import media, qa_report, qa_scenarios
 from arceus_runner.db import AgentRun, ReviewStore
 from arceus_runner.integrations import Repo
 from arceus_runner.notify import clip_sentences
-from arceus_runner.workspace_run import WorkspaceRun, clean_text, count
+from arceus_runner.workspace_run import WorkspaceRun, clean_text, count, read_instructions
 
 FINDINGS = "findings.json"
 # The engine's review reads at most this many characters of one report file (review-gate.sh: report-text --max
@@ -412,6 +413,35 @@ class QaAgent(WorkspaceRun):
 
     def __init__(self, delivery):
         super().__init__(delivery, delivery.cfg.qa)
+        qa_scenarios.adopt_config(self.store, self.c)
+
+    # -- the scenarios (qa_scenarios.py), read from runner.db on every pass --------------------------
+
+    def _schedules(self) -> list[tuple[int, tuple[str, ...], time]]:
+        out = []
+        for sc in self.store.scenarios():
+            plan = qa_scenarios.plan_of(sc)
+            if plan.active:
+                assert plan.at is not None
+                out.append((sc.n, plan.days, plan.at))
+        return out
+
+    def _brief_source(self, run: AgentRun) -> tuple[str | None, str, Path]:
+        sc = self.store.scenario(run.scenario)
+        if sc is None or sc.deleted_at:
+            return None, f"its test scenario (number {run.scenario}) was deleted before the run started", \
+                self.c.instructions
+        path = qa_scenarios.file_of(self.c, sc)
+        text, why = read_instructions(path)
+        if text is None:
+            why = f"scenario \u201c{sc.name}\u201d: {why}"
+        return text, why, path
+
+    def _scope(self, run: AgentRun, repos: list[dict]) -> tuple[dict, tuple[str, str] | None]:
+        """The scenario's number and name as they were when the run started, kept in its snapshot: the report and
+        the list name it so after a rename or a delete."""
+        sc = self.store.scenario(run.scenario)
+        return {"scenario": {"n": run.scenario, "name": sc.name if sc else ""}}, None
 
     def _part_file(self, k: int) -> str:
         return part_name(k)
@@ -475,7 +505,7 @@ class QaAgent(WorkspaceRun):
                     c["url"] = file_url(Repo(id=0, path=r["repo"].rsplit("/", 1)[-1], relative_path=r["repo"],
                                              default_branch=r["default"], archived=False, http_url=r["http_url"]),
                                         r["sha"], c["file"], c["line"])
-        return {**super().view(run, finished),
+        return {**super().view(run, finished), "scenario": scenario_name(self.store, run),
                 **{k: result.get(k) for k in ("summary", "blocked", "tested", "findings", "engine_disputed",
                                           "engine_review")}}
 
@@ -499,8 +529,9 @@ class QaAgent(WorkspaceRun):
         deadline = datetime.fromisoformat(run.deadline).astimezone(timezone.utc)
         stop = datetime.fromisoformat(run.test_until).astimezone(timezone.utc)
         hours = (deadline - datetime.fromisoformat(run.started_at)).total_seconds() / 3600
-        lines = [f"Test run {run.n} of the platform: test it the way the instructions below ask, and report what you "
-                 "found.", "",
+        named = (extra.get("scenario") or {}).get("name")
+        lines = [f"Test run {run.n} of the platform" + (f", scenario \u201c{named}\u201d" if named else "")
+                 + ": test it the way the instructions below ask, and report what you found.", "",
                  "You are the tester. You use the platform as a person would, in the browser (the `browser` MCP "
                  "tools: a headless Chrome), and you read the code to explain what you found. You do not fix "
                  "anything: do not edit files in the repositories, do not commit, do not push. Do not ask anyone a "
@@ -614,12 +645,28 @@ class QaAgent(WorkspaceRun):
         return "\n".join(lines)
 
 
+def scenario_name(store: ReviewStore, run: AgentRun, names: dict[int, str] | None = None) -> str:
+    """The scenario a run is of, by the name it had when the run started; a run not started yet, by its name now."""
+    try:
+        kept = (json.loads(run.snapshot or "{}").get("scenario") or {}).get("name")
+    except (ValueError, AttributeError):
+        kept = None
+    if kept:
+        return kept
+    if names is not None:
+        return names.get(run.scenario, "")
+    sc = store.scenario(run.scenario)
+    return sc.name if sc else ""
+
+
 def index_rows(store: ReviewStore, reports: Path) -> list[dict]:
     """Every run as the list shows it: queued and under way ones too."""
     rows = []
+    names = {sc.n: sc.name for sc in store.scenarios(deleted=True)}
     for run in store.runs("qa"):
         result = json.loads(run.result or "{}")
         rows.append({"n": run.n, "state": run.state, "outcome": run.outcome, "source": run.source,
+                     "scenario": scenario_name(store, run, names), "scenario_n": run.scenario,
                      "requested_by": run.requested_by, "created_at": run.created_at,
                      "started_at": run.started_at, "finished_at": run.finished_at,
                      "stop_requested": bool(run.stop_requested),

@@ -224,7 +224,7 @@ def test_a_number_in_a_form_s_path_that_is_not_one_is_no_such_page(w, path):
     assert admin.post(path, data={"csrf": token, "decision": "accepted", "note": "x"}).status_code == 404, path
 
 
-@pytest.mark.parametrize("page", ["/settings/yaml/", "/qa/instructions/", "/architecture/instructions/"])
+@pytest.mark.parametrize("page", ["/settings/yaml/", "/qa/scenarios/1/instructions/", "/architecture/instructions/"])
 @pytest.mark.parametrize("version", ["1234567890123456789012345", "%C2%B2", "", "-1"])
 def test_a_version_to_put_back_that_is_not_a_number_opens_the_file_as_it_is(w, page, version):
     admin = signed_in(w.settings, "owner@example.com")

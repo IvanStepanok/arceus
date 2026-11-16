@@ -575,9 +575,23 @@ class Notifier:
                  f"• <{r.get('url')}|{esc(r.get('repo'))}> was merged {esc(clip(r.get('reason'), 300))}.\n"
                  f"Details on the ticket: {self.issue_url(r['task_id'])}", task_id=r["task_id"])
 
+    def _scenario_of(self, run) -> str:
+        """ " (Smoke)": the test scenario a run is of, by the name it had when the run started."""
+        if run is None:
+            return ""
+        try:
+            name = (json.loads(run.snapshot or "{}").get("scenario") or {}).get("name")
+        except (ValueError, AttributeError):
+            name = None
+        if not name and hasattr(self.store, "scenario"):
+            sc = self.store.scenario(run.scenario)
+            name = sc.name if sc else None
+        return f" ({esc(name)})" if name else ""
+
     def _on_qa_dispatched(self, r: dict) -> None:
+        run = self.store.run(r["task_id"]) if hasattr(self.store, "run") else None
         self.put(f"qa:{r['task_id']}:started", "qa_started", TRANSITION,
-                 f"🧪 Platform test started: run {esc(r.get('run'))}{started_how(r)}.")
+                 f"🧪 Platform test started: run {esc(r.get('run'))}{self._scenario_of(run)}{started_how(r)}.")
 
     def _on_qa_published(self, r: dict) -> None:
         run = self.store.run(r["task_id"]) if hasattr(self.store, "run") else None
@@ -588,7 +602,7 @@ class Notifier:
         disputed = bool(result.get("engine_disputed"))
         head = (QA_DISPUTED_PARTIAL if run.outcome == "partial" and disputed else
                 QA_HEADS.get(run.outcome or "", "🧪 Platform test finished").format(n=n, s="s" if n != 1 else ""))
-        lines = [f"{head}: run {run.n}."]
+        lines = [f"{head}: run {run.n}{self._scenario_of(run)}."]
         said = (result.get("blocked") if run.outcome == "blocked" else "") or result.get("summary")
         if said:
             lines.append(esc(summary_text(said, 600)))

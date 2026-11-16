@@ -180,7 +180,19 @@ ticket, and reloading the page repeats nothing. An unknown or malformed key is n
 
 ## Test runs
 
-**Test runs** lists every run of the platform test, newest first, queued and running ones included. Each opens at
+**Test runs** starts with the test scenarios ([qa.md](qa.md)): each with its name, its schedule in words ("Weekdays
+at 07:00", "By hand only") and when it is next due, in `schedule.timezone`, and its run if one is queued or under way.
+People with the QA role and admins make a scenario with **New scenario**: a name, the days and the time it runs by
+itself, and its instructions, all saved together. Days and a time are the schedule; leave both empty for a scenario
+run only by hand. A line under them says which it will be as they are picked, and **Clear schedule** empties both. The page of a
+scenario changes its name and schedule and deletes it; a save over a scenario someone changed since the page was opened
+is refused, with what is saved now said and the person's own changes still in the form. A deleted scenario leaves the
+list; its past runs keep its name. **Run now** queues a run of that scenario, refused while one of the same scenario is
+queued or under way; runs of different scenarios wait behind each other. At `qa.max_scenarios` the page says so instead
+of offering a new one. What a scenario runs and when is read by the runner on its next pass, without a restart.
+
+Below the scenarios, the list of every run of the platform test, newest first, queued and running ones included, each
+with its scenario. Each opens at
 `/qa/<n>/`: before its report, as where the run is (queued, and for what; under way, with its step, the agent's
 activity and the same freshness marks as a task's page; the stop it was asked for), refreshing itself until the report
 is written; a finished run whose report is missing says so instead of showing a result. Under way, the page also shows
@@ -206,9 +218,10 @@ when `qa.enabled` is false; it says that none start. Only the report's own files
 exact name, never the copy of the instructions a run keeps (it holds the test accounts), `result.json` or any other
 path.
 
-People with the QA role and admins start a run (one at a time, as `arceus-runner qa run` does; the run records
-their email as who asked) and stop one under way. They also edit the **test instructions**, which nobody else can
-open, since the file holds the test accounts. The editor saves atomically and keeps the file's mode. A save over a
+People with the QA role and admins start a run (the run records their email as who asked) and stop one under way.
+They also edit each scenario's **instructions** (`/qa/scenarios/<n>/instructions/`; the old `/qa/instructions/` opens
+the first scenario's), which nobody else can open, since the file holds the test accounts. Each scenario's file has
+a history of its own. The editor saves atomically and keeps the file's mode. A save over a
 version that changed meanwhile (another person, an edit over SSH) is refused with the difference shown. Every
 saved version is kept with who saved it and can be opened again in the editor. The page also says what the agent
 would get: an instructions file that is empty without its comments, or too large, would stop a run at once.
@@ -233,7 +246,7 @@ the review instructions, the same way as test runs.
 **Settings** is `config.yaml` as a form, a page per section (tracker, code host, schedule, models, test runs and
 so on). Every setting of the runner's schema is there with its current value: what the file says, as written, or
 the default when the file does not say it. A setting the form cannot hold as a field (a map such as
-`review_agent.repos` or `slack.people`, or an optional block such as `qa.schedule`) is edited as YAML in place.
+`review_agent.repos` or `slack.people`, or an optional block such as `architect.schedule`) is edited as YAML in place.
 The whole file can also be edited as YAML.
 
 Admins change it in two steps. **Check the change** shows the exact difference in `config.yaml` and what it needs

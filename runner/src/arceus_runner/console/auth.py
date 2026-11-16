@@ -6,7 +6,8 @@ from __future__ import annotations
 from arceus_runner.console.store import ROLES, User
 
 ROLE_WORDS = {
-    "qa": ("QA", "Starts and stops test runs of the platform and edits their instructions."),
+    "qa": ("QA", "Starts and stops test runs of the platform, and makes, schedules and deletes test scenarios and "
+                 "edits their instructions."),
     "architect": ("Architect", "Decides on architecture findings (accepts the risk, marks a false positive, takes a "
                                "decision back), starts and stops reviews and edits their instructions."),
     "operator": ("Operator", "Sees the settings, restarts the runner and the engine, runs the setup check."),

@@ -116,6 +116,7 @@ td.nowrap { white-space: nowrap; }
 td .passed { color: var(--good); } td .found, td .unfinished, td .partial { color: var(--warn); }
 td .blocked { color: var(--bad); } td .stopped { color: var(--quiet); }
 .run-summary { color: var(--muted); font-size: 0.9rem; display: block; margin-top: 2px; }
+.run-scenario { color: var(--muted); font-size: 0.875rem; display: block; }
 .empty { padding: 24px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
 footer { margin-top: 48px; color: var(--muted); font-size: 0.875rem; }
 footer ul { padding-left: 20px; }
@@ -250,7 +251,8 @@ def run_body(view: dict, project: str, tz: ZoneInfo) -> tuple[str, str]:
     disputed = bool(view.get("engine_disputed"))
     # Who typed the command on the server is the runner's own user: only the schedule says something.
     by = ", on schedule" if view.get("source") == "schedule" else ""
-    facts = [("Started", f"{_when(view.get('started_at') or view.get('created_at'), tz)}{by}"),
+    facts = [("Scenario", view.get("scenario") or ""),
+             ("Started", f"{_when(view.get('started_at') or view.get('created_at'), tz)}{by}"),
              ("Finished", _when(view.get("finished_at"), tz)),
              ("Took", _took(view.get("started_at"), view.get("finished_at")))]
     ins = view.get("instructions") or {}
@@ -315,7 +317,7 @@ def render_index(rows: list[dict], project: str, tz: ZoneInfo) -> str:
     """Every run, newest first."""
     body = [f"<h1>Platform tests of {e(project)}</h1>"]
     if not rows:
-        body.append('<p class="empty">No runs yet. Start one on the server with <code>arceus-runner qa run</code>.</p>')
+        body.append('<p class="empty">No runs yet. Start one on the server with <code>arceus-runner qa run --scenario N</code>.</p>')
         return _page(f"Platform tests of {project}", "\n".join(body))
     trs = []
     for r in sorted(rows, key=lambda r: r["n"], reverse=True):
@@ -326,6 +328,8 @@ def render_index(rows: list[dict], project: str, tz: ZoneInfo) -> str:
         else:
             result = head_of(r["outcome"], r["findings"], bool(r.get("disputed")))
         run = f'<a href="{e(r["n"])}/">Run {e(r["n"])}</a>' if r.get("has_report") else f"Run {e(r['n'])}"
+        if r.get("scenario"):
+            run += f'<span class="run-scenario">{e(r["scenario"])}</span>'
         summary = f'<span class="run-summary">{rich(r["summary"])}</span>' if r.get("summary") else ""
         by = "Schedule" if r["source"] == "schedule" else "Command"
         cls = e(r["outcome"]) if r["state"] == "done" else ""

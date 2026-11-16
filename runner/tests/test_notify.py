@@ -423,17 +423,17 @@ def test_a_merge_the_code_review_did_not_let_through_is_told_once(b):
 
 
 def test_a_test_run_of_the_platform_is_told_when_it_starts_and_ends_with_its_summary(b):
-    run = b.store.add_run("qa", "schedule", "schedule", slot="2026-10-20T02:00:00+03:00")
+    run = b.store.add_run("qa", "schedule", "schedule", slot="2026-10-20T02:00:00+03:00", scenario=1)
     b.events.emit("qa_dispatched", task_id=run.id, run=run.n, source="schedule", by="schedule")
     [started] = b.flush()
-    assert started.startswith("🧪 Platform test started: run 1, on schedule.")
+    assert started.startswith("🧪 Platform test started: run 1 (Main), on schedule.")
     b.store.update_run(run.id, state="done", outcome="found", result=json.dumps(
         {"summary": "Checked sign-in and checkout. <!channel> Checkout with a discount code fails.",
          "findings": [{}, {}]}))
     b.events.emit("qa_published", task_id=run.id, run=run.n, outcome="found", findings=2,
                   url="http://localhost:3300/1/")
     [result] = b.flush()
-    assert result.startswith("🐞 Platform test found 2 problems: run 1.")
+    assert result.startswith("🐞 Platform test found 2 problems: run 1 (Main).")
     assert "&lt;!channel&gt;" in result and "<!channel>" not in result
     assert "Report (through the SSH tunnel): http://localhost:3300/1/" in result
     b.events.emit("qa_published", task_id=run.id, run=run.n, outcome="found", findings=2, url="x")
@@ -444,20 +444,20 @@ def test_a_test_run_of_the_platform_is_told_when_it_starts_and_ends_with_its_sum
     [quiet] = b.flush()
     assert "*the platform test, run 1*" in quiet and "yt.example" not in quiet
     # A run that checked nothing is told as unfinished with the runner's reason, however its summary sounds.
-    again = b.store.add_run("qa", "command", "ops")
+    again = b.store.add_run("qa", "command", "ops", scenario=1)
     b.store.update_run(again.id, state="done", outcome="unfinished",
                           reason="every check was skipped: nothing was tested",
                           result=json.dumps({"summary": "All good.", "findings": []}))
     b.events.emit("qa_published", task_id=again.id, run=again.n, outcome="unfinished", findings=0, url="u")
     [told] = b.flush()
-    assert told.startswith("⚠️ Platform test did not finish: run 2.")
+    assert told.startswith("⚠️ Platform test did not finish: run 2 (Main).")
     assert "Why: every check was skipped: nothing was tested" in told and "no problems" not in told
 
 
 @pytest.mark.parametrize("kind, url", [("qa", "https://console.example.com/qa/1/"),
                                        ("arch", "https://console.example.com/architecture/1/")])
 def test_a_finished_run_links_its_console_page_without_a_word_of_the_tunnel(b, kind, url):
-    run = b.store.add_run(kind, "command", "ops")
+    run = b.store.add_run(kind, "command", "ops", scenario=1 if kind == "qa" else 0)
     b.store.update_run(run.id, state="done", outcome="found", result=json.dumps({"findings": [{}]}))
     b.events.emit(f"{kind}_published", task_id=run.id, run=run.n, outcome="found", findings=1, url=url, tunnel=False)
     [told] = b.flush()
@@ -466,16 +466,16 @@ def test_a_finished_run_links_its_console_page_without_a_word_of_the_tunnel(b, k
 
 def test_a_test_run_whose_report_did_not_pass_its_closing_review_is_told_so(b):
     # With findings: the usual result, and the warning the report page shows.
-    run = b.store.add_run("qa", "command", "ops")
+    run = b.store.add_run("qa", "command", "ops", scenario=1)
     b.store.update_run(run.id, state="done", outcome="found", result=json.dumps(
         {"summary": "Checked sign-in. The reset link is dead.", "findings": [{}],
          "engine_disputed": True, "engine_review": "1. The ledger is incomplete."}))
     b.events.emit("qa_published", task_id=run.id, run=run.n, outcome="found", findings=1, url="u")
     [told] = b.flush()
-    assert told.startswith("🐞 Platform test found 1 problem: run 1.")
+    assert told.startswith("🐞 Platform test found 1 problem: run 1 (Main).")
     assert "did not pass its closing review" in told and "Codex" not in told
     # Without findings: never "could not check everything" when the dispute is the reason.
-    again = b.store.add_run("qa", "command", "ops")
+    again = b.store.add_run("qa", "command", "ops", scenario=1)
     b.store.update_run(again.id, state="done", outcome="partial",
                        reason="the report as a whole did not pass its closing review, so finding nothing is not a "
                               "clean result: see the objections",
@@ -483,16 +483,16 @@ def test_a_test_run_whose_report_did_not_pass_its_closing_review_is_told_so(b):
                                           "engine_review": ""}))
     b.events.emit("qa_published", task_id=again.id, run=again.n, outcome="partial", findings=0, url="u")
     [told] = b.flush()
-    assert told.startswith("☑️ Platform test found no problems, but its report did not pass its closing review: run 2.")
+    assert told.startswith("☑️ Platform test found no problems, but its report did not pass its closing review: run 2 (Main).")
     assert "could not check everything" not in told and "did not pass its closing review: the objections" in told
     # Disputed and showing no testing: unfinished, with the runner's reason.
-    third = b.store.add_run("qa", "command", "ops")
+    third = b.store.add_run("qa", "command", "ops", scenario=1)
     b.store.update_run(third.id, state="done", outcome="unfinished",
                        reason="the report did not pass its closing review, and it names no check that was done",
                        result=json.dumps({"summary": "Found one.", "findings": [{}], "engine_disputed": True}))
     b.events.emit("qa_published", task_id=third.id, run=third.n, outcome="unfinished", findings=1, url="u")
     [told] = b.flush()
-    assert told.startswith("⚠️ Platform test did not finish: run 3.")
+    assert told.startswith("⚠️ Platform test did not finish: run 3 (Main).")
     assert "Why: the report did not pass its closing review, and it names no check that was done" in told
 
 
@@ -527,11 +527,11 @@ def test_an_architecture_review_is_told_with_what_is_new_fixed_and_what_codex_th
 
 
 def test_a_background_run_started_by_the_command_does_not_name_the_servers_user(b):
-    for kind, head in (("qa", "🧪 Platform test started: run 1."), ("arch", "🏛 Architecture review started: run 1.")):
-        run = b.store.add_run(kind, "command", "ai")
-        b.events.emit(f"{kind}_dispatched", task_id=run.id, run=run.n, source="command", by="ai")
+    for kind, head in (("qa", "🧪 Platform test started: run 1 (Main)."), ("arch", "🏛 Architecture review started: run 1.")):
+        run = b.store.add_run(kind, "command", "srv-user-7", scenario=1 if kind == "qa" else 0)
+        b.events.emit(f"{kind}_dispatched", task_id=run.id, run=run.n, source="command", by="srv-user-7")
         [started] = b.flush()
-        assert started.splitlines()[0] == head and "ai" not in started.splitlines()[0]
+        assert started.splitlines()[0] == head and "srv-user-7" not in started.splitlines()[0]
 
 
 def test_code_in_a_summary_shows_as_code_and_a_cut_inside_it_is_closed(b):
@@ -571,7 +571,7 @@ def test_a_long_test_run_summary_is_told_in_whole_sentences(b):
     first = "I tested the piloting work merged on Dev in the last two weeks as six roles. " * 3
     summary = first + "I found 4 major problems: a terminated request can still be edited through the API. " + \
         "I also found 5 minor UI and copy problems. " * 12
-    run = b.store.add_run("qa", "command", "ops")
+    run = b.store.add_run("qa", "command", "ops", scenario=1)
     b.store.update_run(run.id, state="done", outcome="found",
                           result=json.dumps({"summary": summary, "findings": [{}] * 9}))
     b.events.emit("qa_published", task_id=run.id, run=run.n, outcome="found", findings=9, url="u")

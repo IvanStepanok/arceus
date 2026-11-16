@@ -562,15 +562,21 @@ class RunSchedule(Strict):
 
 
 class QaConfig(Strict):
-    """The agent tests the whole platform (qa.py): `arceus-runner qa run`, or `schedule`, queues a run; a Bulava
-    task of its own tests the platform by `instructions` with the workspace's code at hand; each run gets a report
-    of its own under `reports`, served on `address:port` (an SSH tunnel, like Grafana)."""
+    """The agent tests the whole platform (qa.py) by test scenarios (qa_scenarios.py), each a name, an instructions
+    file and a schedule of its own, kept in runner.db and made in the console or with `arceus-runner qa scenario`.
+    The console's button, `arceus-runner qa run` or a scenario's schedule queues a run; a Bulava task of its own tests
+    the platform by the scenario's instructions with the workspace's code at hand; each run gets a report of its own
+    under `reports`, served on `address:port` (an SSH tunnel, like Grafana)."""
     enabled: bool = False
-    # The operator's file: the platform's URL, its test accounts and what to test, in any shape. Read when a run
-    # starts and kept with the run, so a later edit never changes what a run was asked.
+    # The first scenario's file: the platform's URL, its test accounts and what to test, in any shape. Each scenario
+    # made later has its own beside it, in `scenarios/<n>.md`. Read when a run starts and kept with the run, so a later
+    # edit never changes what a run was asked.
     instructions: ExpandedPath = Path("~/arceus/data/qa/instructions.md").expanduser()
     reports: ExpandedPath = Path("~/arceus/data/qa/runs").expanduser()
-    schedule: RunSchedule | None = None    # none: runs start only by the command
+    # Read once: the first time the runner starts with scenarios it gives this schedule to the first scenario, and
+    # from then on each scenario's own schedule is the one that counts. `arceus-runner check` asks to remove it.
+    schedule: RunSchedule | None = None
+    max_scenarios: int = Field(default=20, ge=1, le=100)  # scenarios that exist at once, deleted ones not counted
     timeout: Duration = timedelta(hours=8)  # the run's own; past it the run is stopped and reported as unfinished
     # How much of the agent's report one run keeps. They guard the report page and the disk against an agent that
     # runs away, not the testing: raise them for long instructions. The agent is told them; whatever goes past one is

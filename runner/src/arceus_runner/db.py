@@ -746,6 +746,70 @@ MIGRATIONS.append(
 )
 
 
+MIGRATIONS.append(
+    # 25: test scenarios (qa_scenarios.py): any number of named test runs, each with its own instructions file and its
+    # own schedule, kept here so that one made in the web console is scheduled on the runner's next pass, without a
+    # restart. Scenario 1 is the one test runs had before, reading `qa.instructions` (`own_file` 0); the runner gives
+    # it `qa.schedule` once (qa_scenarios.adopt_config). A deleted scenario keeps its row (`deleted_at`), so its past
+    # runs still name it. `version` goes up on every change: a save made from a page opened before is refused.
+    # `agent_runs.scenario` is the scenario a test run is of (0 for an architecture review), and the scheduled time
+    # is unique per scenario, so two scenarios set for the same minute are both queued. A test run must name its
+    # scenario: a console or command of the version before, which inserts none, is refused here, not counted as one.
+    """
+    CREATE TABLE qa_scenarios (
+        n                INTEGER PRIMARY KEY,
+        name             TEXT NOT NULL,
+        days             TEXT NOT NULL DEFAULT '[]',
+        at               TEXT,
+        scheduled        INTEGER NOT NULL DEFAULT 0 CHECK (scheduled IN (0, 1)),
+        own_file         INTEGER NOT NULL DEFAULT 1 CHECK (own_file IN (0, 1)),
+        version          INTEGER NOT NULL DEFAULT 1,
+        created_by       TEXT NOT NULL,
+        updated_by       TEXT NOT NULL,
+        deleted_at       TEXT,
+        created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    INSERT INTO qa_scenarios (n, name, own_file, created_by, updated_by) VALUES (1, 'Main', 0, 'runner', 'runner');
+    CREATE TABLE agent_runs_v25 (
+        id               TEXT PRIMARY KEY,
+        kind             TEXT NOT NULL CHECK (kind IN ('qa', 'arch')),
+        n                INTEGER NOT NULL,
+        scenario         INTEGER NOT NULL DEFAULT 0,
+        source           TEXT NOT NULL CHECK (source IN ('command', 'schedule')),
+        requested_by     TEXT NOT NULL,
+        slot             TEXT,
+        state            TEXT NOT NULL CHECK (state IN ('pending', 'preparing', 'running', 'reviewing', 'restoring',
+                                                        'publishing', 'done')),
+        stop_requested   INTEGER NOT NULL DEFAULT 0 CHECK (stop_requested IN (0, 1)),
+        snapshot         TEXT NOT NULL DEFAULT '{}',
+        result           TEXT,
+        outcome          TEXT,
+        reason           TEXT,
+        started_at       TEXT,
+        finished_at      TEXT,
+        created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        deadline         TEXT,
+        test_until       TEXT,
+        progress         TEXT,
+        CHECK ((kind = 'qa' AND scenario > 0) OR (kind = 'arch' AND scenario = 0)),
+        UNIQUE (kind, n),
+        UNIQUE (kind, scenario, slot)
+    );
+    INSERT INTO agent_runs_v25 (id, kind, n, scenario, source, requested_by, slot, state, stop_requested, snapshot,
+                                result, outcome, reason, started_at, finished_at, created_at, updated_at, deadline,
+                                test_until, progress)
+        SELECT id, kind, n, CASE kind WHEN 'qa' THEN 1 ELSE 0 END, source, requested_by, slot, state, stop_requested,
+               snapshot, result, outcome, reason, started_at, finished_at, created_at, updated_at, deadline,
+               test_until, progress FROM agent_runs;
+    DROP TABLE agent_runs;
+    ALTER TABLE agent_runs_v25 RENAME TO agent_runs;
+    CREATE INDEX agent_runs_state ON agent_runs (kind, state);
+    """
+)
+
+
 TASK_FIELDS = ("task_id", "issue_db_id", "state", "summary", "tag_author", "repo", "repo_path", "branch",
                "base_branch", "question_id", "question_at_ms", "reason", "mr_urls", "attempt_started",
                "extra_repos", "review_rounds", "ci_attempts", "published_at_ms", "failed_at_ms",
@@ -1151,6 +1215,7 @@ RUN_UNDER_WAY = ("pending", *RUN_HOLDS, "publishing")
 RUN_FIELDS = ("state", "stop_requested", "snapshot", "result", "outcome", "reason", "started_at", "finished_at",
               "deadline", "test_until", "progress")
 RUN_KINDS = ("qa", "arch")
+SCENARIO_FIELDS = ("name", "days", "at", "scheduled")
 FINDING_FIELDS = ("title", "body", "last_run", "status", "fixed_run", "decision", "decision_note", "decided_at",
                   "decided_by")
 
@@ -1176,6 +1241,24 @@ class AgentRun:
     deadline: str | None = None    # when the run is stopped, fixed when it is prepared
     test_until: str | None = None  # a test run's: when its agent stops testing and writes the report
     progress: str | None = None    # JSON: a test run's plan as the runner last counted it (qa.plan_progress)
+    scenario: int = 0              # a test run's scenario (qa_scenarios), 0 for an architecture review
+
+
+@dataclass(frozen=True)
+class QaScenario:
+    """A named test run with its own instructions and schedule (qa_scenarios.py)."""
+    n: int
+    name: str
+    days: str            # JSON list of weekdays, mon..sun
+    at: str | None       # HH:MM in schedule.timezone
+    scheduled: int       # 1: queued by itself at `at` on `days`
+    own_file: int        # 0: reads qa.instructions (the scenario test runs had before), 1: a file of its own
+    version: int
+    created_by: str
+    updated_by: str
+    deleted_at: str | None
+    created_at: str = ""
+    updated_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -1262,19 +1345,37 @@ class ReviewStore(TaskStore):
 
     # -- runs of the background agents (workspace_run.py) --
 
-    def add_run(self, kind: str, source: str, requested_by: str, slot: str | None = None) -> AgentRun | None:
-        """A new run of this kind, numbered after its earlier ones. None when a run of the kind for this scheduled
-        slot exists already."""
+    def add_run(self, kind: str, source: str, requested_by: str, slot: str | None = None,
+                scenario: int = 0) -> AgentRun | None:
+        """A new run of this kind (of this test scenario), numbered after the kind's earlier ones. None when a run of
+        the kind and scenario for this scheduled slot exists already."""
         assert kind in RUN_KINDS
         with contextlib.nullcontext() if self.conn.in_transaction else self.transaction():
-            if slot and self.conn.execute("SELECT 1 FROM agent_runs WHERE kind = ? AND slot = ?",
-                                          (kind, slot)).fetchone():
+            if slot and self.conn.execute("SELECT 1 FROM agent_runs WHERE kind = ? AND scenario = ? AND slot = ?",
+                                          (kind, scenario, slot)).fetchone():
                 return None
             n = self.conn.execute("SELECT COALESCE(MAX(n), 0) FROM agent_runs WHERE kind = ?", (kind,)).fetchone()[0] + 1
-            self.conn.execute("INSERT INTO agent_runs (id, kind, n, source, requested_by, slot, state)"
-                              " VALUES (?, ?, ?, ?, ?, ?, ?)", (f"{kind}-{n}", kind, n, source, requested_by, slot,
-                                                                "pending"))
+            self.conn.execute("INSERT INTO agent_runs (id, kind, n, scenario, source, requested_by, slot, state)"
+                              " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (f"{kind}-{n}", kind, n, scenario, source,
+                                                                   requested_by, slot, "pending"))
         return self.run(f"{kind}-{n}")
+
+    def queue_run(self, kind: str, source: str, requested_by: str, slot: str | None = None,
+                  scenario: int = 0) -> tuple[AgentRun | None, AgentRun | None]:
+        """A new run, unless one of the kind (of the scenario, for a test run) is queued or under way already: the
+        new run, or None and the run that is (None for both when this scheduled slot was queued before). Checked and
+        written in one transaction, so a person and the schedule never queue the same scenario twice at once.
+        LookupError for a test scenario that does not exist or was deleted."""
+        with self.transaction():
+            if kind == "qa" and not self.conn.execute("SELECT 1 FROM qa_scenarios WHERE n = ? AND deleted_at IS NULL",
+                                                      (scenario,)).fetchone():
+                raise LookupError(f"there is no test scenario {scenario}")
+            q, args = "SELECT * FROM agent_runs WHERE kind = ? AND scenario = ?", [kind, scenario]
+            q += f" AND state IN ({', '.join('?' * len(RUN_UNDER_WAY))}) ORDER BY n LIMIT 1"
+            busy = self.conn.execute(q, (*args, *RUN_UNDER_WAY)).fetchone()
+            if busy:
+                return None, AgentRun(**dict(busy))
+            return self.add_run(kind, source, requested_by, slot=slot, scenario=scenario), None
 
     def run(self, run_id: str) -> AgentRun | None:
         r = self.conn.execute("SELECT * FROM agent_runs WHERE id = ?", (run_id,)).fetchone()
@@ -1305,6 +1406,50 @@ class ReviewStore(TaskStore):
         run = self.run(run_id)
         assert run is not None
         return run
+
+    # -- test scenarios (qa_scenarios.py) --
+
+    def scenarios(self, deleted: bool = False) -> list[QaScenario]:
+        """The test scenarios in the order they were made; with `deleted`, the deleted ones too."""
+        q = "SELECT * FROM qa_scenarios" + ("" if deleted else " WHERE deleted_at IS NULL") + " ORDER BY n"
+        return [QaScenario(**dict(r)) for r in self.conn.execute(q).fetchall()]
+
+    def scenario(self, n: int) -> QaScenario | None:
+        """A scenario by its number, deleted or not."""
+        r = self.conn.execute("SELECT * FROM qa_scenarios WHERE n = ?", (n,)).fetchone()
+        return QaScenario(**dict(r)) if r else None
+
+    def add_scenario(self, name: str, days: str, at: str | None, scheduled: bool, by: str) -> QaScenario:
+        """A new scenario with an instructions file of its own; its number is never given to another one."""
+        cur = self.conn.execute(
+            "INSERT INTO qa_scenarios (n, name, days, at, scheduled, own_file, created_by, updated_by) VALUES "
+            "((SELECT COALESCE(MAX(n), 0) + 1 FROM qa_scenarios), ?, ?, ?, ?, 1, ?, ?)",
+            (name, days, at, int(scheduled), by, by))
+        scenario = self.scenario(cur.lastrowid)  # n is the rowid
+        assert scenario is not None
+        return scenario
+
+    def update_scenario(self, n: int, version: int, by: str, **fields) -> QaScenario | None:
+        """Change a scenario that is at `version` still; None when it is not (changed or deleted since)."""
+        unknown = set(fields) - set(SCENARIO_FIELDS)
+        if unknown:
+            raise ValueError(f"cannot update {unknown}")
+        if "scheduled" in fields:
+            fields["scheduled"] = int(fields["scheduled"])
+        sets = "".join(f"{k} = ?, " for k in fields)
+        cur = self.conn.execute(f"UPDATE qa_scenarios SET {sets}version = version + 1, updated_by = ?, "
+                                "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+                                "WHERE n = ? AND version = ? AND deleted_at IS NULL",
+                                (*fields.values(), by, n, version))
+        return self.scenario(n) if cur.rowcount else None
+
+    def delete_scenario(self, n: int, version: int, by: str) -> bool:
+        """Mark a scenario deleted, if it is at `version` still. Its row stays, so its past runs still name it."""
+        cur = self.conn.execute("UPDATE qa_scenarios SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), "
+                                "scheduled = 0, version = version + 1, updated_by = ?, "
+                                "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+                                "WHERE n = ? AND version = ? AND deleted_at IS NULL", (by, n, version))
+        return bool(cur.rowcount)
 
     def run_holding(self, kind: str | None = None) -> AgentRun | None:
         """The run (of this kind, or of any) that has the shared workspace now, if any."""

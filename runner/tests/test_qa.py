@@ -6,19 +6,19 @@ import json
 import subprocess
 import urllib.error
 import urllib.request
-from datetime import timedelta
+from datetime import time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from arceus_runner import qa_report
+from arceus_runner import qa_report, qa_scenarios
 from arceus_runner.config import QaConfig, Secrets
 from arceus_runner.metrics import Metrics
 from arceus_runner.cli import qa_check
-from arceus_runner.qa import Limits, load_findings, outcome_of
+from arceus_runner.qa import Limits, index_rows, load_findings, outcome_of
 
-from .conftest import GL_TOKEN, YT_TOKEN
+from .conftest import GL_TOKEN, YT_TOKEN, read_events
 from .test_delivery import World, git, take
 
 EXAMPLE = Path(__file__).parents[2] / "config" / "qa-instructions.example.md"
@@ -53,7 +53,7 @@ def w(tmp_path):
 
 
 def queue(w: World, by: str = "ops") -> None:
-    w.store.add_run("qa", "command", by)
+    w.store.add_run("qa", "command", by, scenario=1)
     w.tick()
 
 
@@ -755,8 +755,8 @@ def test_the_example_as_setup_installs_it_is_empty_and_never_tested(tmp_path):
     w = world(tmp_path, instructions=EXAMPLE.read_text())
     try:
         assert "staging.example.com" in w.cfg.qa.instructions.read_text()
-        check = qa_check(w.cfg)
-        assert check.status == "fail" and "empty (comments only)" in check.detail
+        [check] = qa_check(w.cfg)
+        assert check.status == "fail" and "empty (comments only)" in check.detail and "Main" in check.detail
         queue(w)
         assert dispatches(w) == []
         run = w.store.run(RID)
@@ -769,7 +769,7 @@ def test_the_example_as_setup_installs_it_is_empty_and_never_tested(tmp_path):
 def test_the_example_does_not_fail_the_check_while_qa_is_off(tmp_path):
     w = world(tmp_path, instructions=EXAMPLE.read_text(), enabled=False)
     try:
-        assert qa_check(w.cfg).status == "ok"
+        assert [c.status for c in qa_check(w.cfg)] == ["ok"]
     finally:
         w.events.close()
         w.store.close()
@@ -779,7 +779,7 @@ def test_the_agent_gets_the_instructions_without_their_comments_and_the_run_keep
     w = world(tmp_path, instructions=EXAMPLE.read_text() + "\nStaging: https://qa.example.org\n<!-- a note -->\n"
                                                            "Check the cart.\n")
     try:
-        assert qa_check(w.cfg).status == "ok"
+        assert [c.status for c in qa_check(w.cfg)] == ["ok"]
         queue(w)
         [call] = dispatches(w)
         text = call["argv"][-1].split("## The instructions", 1)[1]
@@ -805,7 +805,7 @@ def test_stop_ends_the_run_and_keeps_what_it_found(w):
 
 
 def test_a_queued_run_that_is_stopped_never_starts(w):
-    w.store.add_run("qa", "command", "ops")
+    w.store.add_run("qa", "command", "ops", scenario=1)
     w.store.update_run(RID, stop_requested=1)
     w.tick()
     assert dispatches(w) == [] and w.store.run(RID).outcome == "stopped"
@@ -820,7 +820,7 @@ def test_a_crash_between_dispatch_and_its_record_does_not_dispatch_twice(w):
 
 
 def test_the_run_goes_before_a_queued_ticket(w):
-    w.store.add_run("qa", "command", "ops")
+    w.store.add_run("qa", "command", "ops", scenario=1)
     take(w)
     assert [c["argv"][1] for c in w.calls("dispatch")] == [RID]
 
@@ -863,6 +863,162 @@ def test_a_scheduled_time_missed_by_more_than_an_hour_is_not_made_up(tmp_path):
     finally:
         w.events.close()
         w.store.close()
+
+
+# -- scenarios ----------------------------------------------------------------------------------------------
+
+def scenario(w: World, name: str, text: str, days=("tue",), at: str | None = "09:30") -> int:
+    """A scenario made the way the console makes one: its row in runner.db and its file, no restart."""
+    with w.store.transaction():
+        sc = qa_scenarios.create(w.store, w.cfg.qa, name, list(days), at or "", "q@example.com")
+    path = qa_scenarios.file_of(w.cfg.qa, sc)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return sc.n
+
+
+def test_two_scenarios_due_at_once_are_both_queued_and_run_one_after_the_other(tmp_path):
+    # NOW is Tuesday 2026-10-20 07:00 UTC, 10:00 in Kyiv: both are due at 09:30.
+    w = world(tmp_path)
+    try:
+        smoke = scenario(w, "Smoke", "Sign in.\n")
+        reg = scenario(w, "Regression", "Everything.\n")
+        w.tick()
+        runs = w.store.runs("qa")
+        assert [(r.scenario, r.source) for r in runs] == [(smoke, "schedule"), (reg, "schedule")]
+        [call] = dispatches(w)  # one at a time: the workspace is shared
+        assert "scenario \u201cSmoke\u201d" in call["argv"][-1] and "Sign in." in call["argv"][-1]
+        w.restart()
+        w.tick()
+        assert len(w.store.runs("qa")) == 2  # the same slots: not again, also after a restart
+        report(w)
+        finish(w)
+        assert w.store.run("qa-1").state == "done"
+        w.tick()
+        [_, second] = dispatches(w)
+        assert second["argv"][second["argv"].index("--task-id") + 1] == "qa-2"
+        text = second["argv"][-1]
+        assert "scenario \u201cRegression\u201d" in text and "Everything." in text and "Sign in." not in text
+        snap = json.loads(w.store.run("qa-2").snapshot)
+        assert snap["scenario"] == {"n": reg, "name": "Regression"}
+        assert snap["instructions"]["path"] == str(tmp_path / "qa" / "scenarios" / f"{reg}.md")
+    finally:
+        w.events.close()
+        w.store.close()
+
+
+def test_a_scenario_s_time_is_skipped_only_while_that_same_scenario_is_busy(tmp_path):
+    w = world(tmp_path)
+    try:
+        smoke = scenario(w, "Smoke", "Sign in.\n", days=(), at=None)
+        w.store.queue_run("qa", "command", "ops", scenario=smoke)
+        w.tick()
+        assert w.store.run("qa-1").state == "running"
+        with w.store.transaction():
+            w.store.update_scenario(smoke, w.store.scenario(smoke).version, "q", days='["tue"]', at="09:30",
+                                    scheduled=True)
+        reg = scenario(w, "Regression", "Everything.\n")
+        w.tick()
+        assert [(r.n, r.scenario) for r in w.store.runs("qa")] == [(1, smoke), (2, reg)]
+        skipped = [e for e in read_events(w.cfg.paths.events) if e["event"] == "qa_schedule_skipped"]
+        assert [(e["scenario"], e["busy"]) for e in skipped] == [(smoke, "qa-1")]
+    finally:
+        w.events.close()
+        w.store.close()
+
+
+def test_a_scenario_made_while_the_runner_runs_is_scheduled_on_its_next_pass(tmp_path):
+    w = world(tmp_path)
+    try:
+        w.tick()
+        assert w.store.runs("qa") == []
+        smoke = scenario(w, "Smoke", "Sign in.\n")
+        w.tick()
+        [run] = w.store.runs("qa")
+        assert run.scenario == smoke and run.source == "schedule"
+    finally:
+        w.events.close()
+        w.store.close()
+
+
+def test_qa_schedule_moves_to_the_first_scenario_once_and_a_change_made_after_stays(tmp_path):
+    w = world(tmp_path, schedule={"days": ["mon", "tue"], "at": "09:30"})
+    try:
+        first = w.store.scenario(1)
+        assert (json.loads(first.days), first.at, first.scheduled) == (["mon", "tue"], "09:30", 1)
+        with w.store.transaction():
+            w.store.update_scenario(1, first.version, "q", scheduled=False)
+        w.restart()
+        w.tick()
+        assert w.store.scenario(1).scheduled == 0  # not given qa.schedule again
+        assert w.store.runs("qa") == []
+        [warn] = [c for c in qa_check(w.cfg) if c.name == "config.qa.schedule"]
+        assert warn.status == "warn" and "Remove this block" in warn.detail
+    finally:
+        w.events.close()
+        w.store.close()
+
+
+def test_a_run_whose_scenario_was_deleted_before_it_started_closes_with_why(tmp_path):
+    w = world(tmp_path)
+    try:
+        smoke = scenario(w, "Smoke", "Sign in.\n", days=(), at=None)
+        w.store.queue_run("qa", "command", "ops", scenario=smoke)
+        assert w.store.delete_scenario(smoke, w.store.scenario(smoke).version, "q")
+        w.tick()
+        assert dispatches(w) == []
+        run = w.store.run(RID)
+        assert (run.state, run.outcome) == ("done", "unfinished") and "deleted before the run started" in run.reason
+        [row] = index_rows(w.store, w.cfg.qa.reports)
+        assert row["scenario"] == "Smoke"
+    finally:
+        w.events.close()
+        w.store.close()
+
+
+def test_a_person_and_the_schedule_never_queue_the_same_scenario_twice_at_once(tmp_path):
+    from arceus_runner.db import ReviewStore
+    w = world(tmp_path)
+    try:
+        other = ReviewStore.existing(w.cfg.paths.db)
+        try:
+            first, busy = other.queue_run("qa", "command", "q@example.com", scenario=1)
+            assert first is not None and busy is None
+            again, busy = w.store.queue_run("qa", "schedule", "schedule", slot="x", scenario=1)
+            assert again is None and busy.id == first.id
+            with pytest.raises(LookupError):
+                w.store.queue_run("qa", "command", "ops", scenario=99)
+        finally:
+            other.close()
+    finally:
+        w.events.close()
+        w.store.close()
+
+
+def test_a_console_of_the_version_before_cannot_queue_a_run_of_no_scenario(tmp_path):
+    import sqlite3
+    w = world(tmp_path)
+    try:
+        conn = sqlite3.connect(w.cfg.paths.db)
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO agent_runs (id, kind, n, source, requested_by, state) VALUES "
+                         "('qa-9', 'qa', 9, 'command', 'old', 'pending')")
+        conn.close()
+    finally:
+        w.events.close()
+        w.store.close()
+
+
+def test_the_next_time_and_the_words_of_a_schedule():
+    from datetime import datetime, timezone
+    tz = ZoneInfo("Europe/Kyiv")
+    plan = qa_scenarios.Plan(days=("mon", "fri"), at=time(9, 30), on=True)
+    tue = datetime(2026, 10, 20, 7, 0, tzinfo=timezone.utc)  # Tuesday, 10:00 in Kyiv
+    assert qa_scenarios.next_time(plan, tue, tz) == datetime(2026, 10, 23, 9, 30, tzinfo=tz)
+    assert qa_scenarios.describe(plan) == "Mon, Fri at 09:30"
+    assert qa_scenarios.describe(qa_scenarios.Plan(qa_scenarios.DAYS[:5], time(7, 0), True)) == "Weekdays at 07:00"
+    assert qa_scenarios.describe(qa_scenarios.Plan(("mon",), time(7, 0), False)) == "By hand only"
+    assert qa_scenarios.next_time(qa_scenarios.Plan(("mon",), time(7, 0), False), tue, tz) is None
 
 
 # -- reading what the agent wrote ----------------------------------------------------------------------
@@ -1050,11 +1206,11 @@ def test_the_list_of_runs_is_there_before_any_run_and_shows_queued_and_running_o
             return r.read().decode()
     try:
         assert "No runs yet" in page()
-        w.store.add_run("qa", "command", "ops")
+        w.store.add_run("qa", "command", "ops", scenario=1)
         assert "Run 1" in page() and "Queued" in page() and 'href="1/"' not in page()
         w.tick()
         assert w.store.run(RID).state == "running" and "Testing now" in page()
-        w.store.add_run("qa", "command", "ops")
+        w.store.add_run("qa", "command", "ops", scenario=1)
         listed = page()
         assert "Run 2" in listed and "Queued" in listed
         report(w)
@@ -1107,7 +1263,7 @@ def test_the_runs_times_are_fixed_when_it_is_prepared_and_the_brief_the_stop_and
 
 def test_an_engine_busy_when_the_run_is_sent_does_not_move_its_times(w):
     w.set_engine(lambda s: s["next_rc"].update({"dispatch": 6}))
-    w.store.add_run("qa", "command", "ops")
+    w.store.add_run("qa", "command", "ops", scenario=1)
     w.tick()
     run = w.store.run(RID)
     assert run.state == "preparing" and run.deadline

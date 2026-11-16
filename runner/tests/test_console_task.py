@@ -407,7 +407,7 @@ def test_the_held_text_never_reaches_the_page(w):
 @pytest.mark.parametrize("kind,base", [("qa", "/qa/"), ("arch", "/architecture/")])
 def test_a_run_under_way_opens_with_where_it_is_instead_of_not_found(w, kind, base):
     now = time.time()
-    run = w.store.add_run(kind, "command", "q@example.com")
+    run = w.store.add_run(kind, "command", "q@example.com", scenario=1 if kind == "qa" else 0)
     w.store.update_run(run.id, state="running", started_at="2026-11-15T09:00:00Z")
     w.metrics_text = metrics(steps={run.id: ("agent", "running", now - 300)}, observed={run.id: now - 3},
                              active={run.id: now - 15})
@@ -429,7 +429,7 @@ def iso(t: float) -> str:
 
 def test_a_test_run_shows_how_long_it_has_run_the_times_it_was_given_and_its_plan(w):
     now = time.time()
-    run = w.store.add_run("qa", "command", "q@example.com")
+    run = w.store.add_run("qa", "command", "q@example.com", scenario=1)
     started = now - 3600
     w.store.update_run(run.id, state="running", started_at=iso(started), deadline=iso(started + 8 * 3600),
                        test_until=iso(started + 7 * 3600),
@@ -462,7 +462,7 @@ def test_a_test_run_shows_how_long_it_has_run_the_times_it_was_given_and_its_pla
 
 
 def test_a_run_whose_report_is_under_review_in_parts_says_which_part(w):
-    run = w.store.add_run("qa", "command", "q@example.com")
+    run = w.store.add_run("qa", "command", "q@example.com", scenario=1)
     w.store.update_run(run.id, state="running", started_at=iso(time.time() - 60),
                        snapshot=json.dumps({"review": {"part": 2, "parts": ["findings.json", "findings-2.json",
                                                                              "findings-3.json"]}}))
@@ -473,14 +473,14 @@ def test_a_run_whose_report_is_under_review_in_parts_says_which_part(w):
     ({"state": "none"}, "No plan yet"), ({"state": "shape"}, "not in the form"),
     ({"state": "unreadable"}, "cannot be read")])
 def test_a_plan_that_cannot_be_counted_is_said_so_never_as_numbers(w, progress, words):
-    run = w.store.add_run("qa", "command", "q@example.com")
+    run = w.store.add_run("qa", "command", "q@example.com", scenario=1)
     w.store.update_run(run.id, state="running", started_at=iso(time.time() - 60), progress=json.dumps(progress))
     html = page(w, "/qa/1/live")
     assert words in text_of(html) and "checks done" not in html
 
 
 def test_a_queued_run_shows_no_clock_and_an_old_run_no_times_it_was_not_given(w):
-    run = w.store.add_run("qa", "command", "q@example.com")
+    run = w.store.add_run("qa", "command", "q@example.com", scenario=1)
     assert 'data-card="time"' not in page(w, "/qa/1/live")
     w.store.update_run(run.id, state="running", started_at=iso(time.time() - 120))
     html = page(w, "/qa/1/live")
@@ -488,7 +488,7 @@ def test_a_queued_run_shows_no_clock_and_an_old_run_no_times_it_was_not_given(w)
 
 
 def test_a_finished_run_shows_what_it_took_and_its_plan_as_it_last_stood(w):
-    run = w.store.add_run("qa", "command", "q@example.com")
+    run = w.store.add_run("qa", "command", "q@example.com", scenario=1)
     w.store.update_run(run.id, state="done", outcome="unfinished", started_at="2026-11-15T09:00:00Z",
                        finished_at="2026-11-15T11:30:00Z", deadline="2026-11-15T17:00:00Z",
                        test_until="2026-11-15T16:00:00Z",
@@ -499,7 +499,7 @@ def test_a_finished_run_shows_what_it_took_and_its_plan_as_it_last_stood(w):
 
 
 def test_the_time_limit_is_not_shown_as_a_promised_end(w):
-    run = w.store.add_run("qa", "command", "q@example.com")
+    run = w.store.add_run("qa", "command", "q@example.com", scenario=1)
     now = time.time()
     w.store.update_run(run.id, state="running", started_at=iso(now - 3600), deadline=iso(now - 60))
     text = text_of(page(w, "/qa/1/live"))
@@ -508,7 +508,7 @@ def test_the_time_limit_is_not_shown_as_a_promised_end(w):
 
 
 def test_the_stop_button_follows_the_run_and_goes_once_stop_is_asked(w):
-    run = w.store.add_run("qa", "command", "q@example.com")
+    run = w.store.add_run("qa", "command", "q@example.com", scenario=1)
     w.store.update_run(run.id, state="running", started_at=iso(time.time() - 60))
     assert "Stop this run" in page(w, "/qa/1/live")
     w.store.update_run(run.id, stop_requested=1)
@@ -528,7 +528,7 @@ def test_the_page_says_it_stopped_updating_also_when_requests_hang_and_never_pil
 
 
 def test_the_run_page_does_not_read_the_timer_aloud_and_says_when_it_stops_updating(w):
-    run = w.store.add_run("qa", "command", "q@example.com")
+    run = w.store.add_run("qa", "command", "q@example.com", scenario=1)
     w.store.update_run(run.id, state="running", started_at=iso(time.time() - 60))
     html = page(w, "/qa/1/")
     wrapper = re.search(r"<div data-refresh=[^>]*>", html).group(0)
@@ -546,7 +546,7 @@ def test_a_finished_review_still_opens_as_its_report(w):
 
 
 def test_a_finished_test_run_without_its_report_says_so(w):
-    run = w.store.add_run("qa", "command", "q@example.com")
+    run = w.store.add_run("qa", "command", "q@example.com", scenario=1)
     w.store.update_run(run.id, state="done", outcome="unfinished", reason="the agent wrote no report")
     html = page(w, "/qa/1/")
     assert 'data-reason="no_report"' in html and "report is missing" in html and "the agent wrote no report" in html
@@ -564,7 +564,7 @@ def test_every_task_and_run_link_on_home_and_the_lists_opens(w):
     task(w.store, "ACME-4", "failed", reason="boom")
     w.store.record_trigger("ACME-20", "tag-1", "ivan", True, 1)
     for kind in ("qa", "arch"):
-        run = w.store.add_run(kind, "command", "x@example.com")
+        run = w.store.add_run(kind, "command", "x@example.com", scenario=1 if kind == "qa" else 0)
         w.store.update_run(run.id, state="running")
     c = signed_in(w.settings, "owner@example.com")
     pages = ["/", "/tasks/", "/qa/", "/architecture/"]
@@ -594,7 +594,7 @@ def test_a_reviewed_ticket_tagged_for_the_agent_stays_with_its_review_until_that
 
 def test_a_queued_ticket_names_the_work_that_goes_first(w):
     w.store.record_trigger("ACME-20", "tag-1", "ivan", True, 1)
-    w.store.add_run("qa", "command", "q@example.com")
+    w.store.add_run("qa", "command", "q@example.com", scenario=1)
     html = page(w, "/tasks/ACME-20/")
     assert 'data-reason="behind"' in html and "Platform test, run 1 goes first" in html
 
