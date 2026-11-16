@@ -461,6 +461,55 @@ def test_hung_attempt_fails_after_the_timeout(w):
     assert [c["argv"][0] for c in w.calls("night-shift")][-1] == "stop"
 
 
+def test_an_mr_refused_while_gitlab_does_not_know_the_pushed_branch_yet_is_asked_again(w, monkeypatch):
+    """GitLab's API learns of a pushed branch a moment after the push: the MR is asked for again a few seconds
+    apart, in the same tick, and only one is made."""
+    waits: list[float] = []
+    monkeypatch.setattr("arceus_runner.gitlab._sleep", waits.append)
+    take(w)
+    w.agent_commits()
+    w.settle("ACME-1", "waiting_review")
+    w.gl.branch_late = 2
+    w.tick()
+    assert w.store.task("ACME-1").state == "code_review"
+    assert len(w.gl.mrs) == 1 and waits == [1.0, 2.0]
+    assert not w.events_named("reconcile_failed")
+
+
+def test_a_branch_gitlab_still_does_not_know_after_the_tries_is_published_on_a_later_tick(w, monkeypatch):
+    monkeypatch.setattr("arceus_runner.gitlab._sleep", lambda s: None)
+    take(w)
+    w.agent_commits()
+    w.settle("ACME-1", "waiting_review")
+    w.gl.branch_late = 4  # one more than the tries
+    w.tick()
+    assert w.store.task("ACME-1").state == "publishing" and not w.gl.mrs
+    [failed] = w.events_named("reconcile_failed")
+    assert "does not exist" in failed["reason"]
+    w.tick()
+    assert w.store.task("ACME-1").state == "code_review" and len(w.gl.mrs) == 1
+
+
+def test_any_other_refusal_of_an_mr_is_not_asked_again(monkeypatch):
+    from arceus_runner.gitlab import GitLabWriter
+    from arceus_runner.http import BadRequest
+    waits: list[float] = []
+    monkeypatch.setattr("arceus_runner.gitlab._sleep", waits.append)
+    asked: list[str] = []
+
+    class Client:
+        def request(self, method, path, **kwargs):
+            asked.append(path)
+            raise BadRequest("gitlab", 'POST merge_requests: HTTP 400: {"message":{"target_branch":["is invalid"]}}',
+                             400)
+
+    writer = GitLabWriter.__new__(GitLabWriter)
+    writer.c = Client()
+    with pytest.raises(BadRequest):
+        writer.create_mr(1, source_branch="b", target_branch="nope", title="t", description="d", label="agent")
+    assert len(asked) == 1 and waits == []
+
+
 def test_crash_during_publishing_does_not_duplicate(w):
     take(w)
     w.agent_commits()

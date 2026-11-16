@@ -46,4 +46,4 @@ The MR description has the ticket with a link; **What was done**, the agent's ow
 
 ## Doing nothing twice
 
-Comments go through a journal in SQLite and carry an `[arceus:…]` marker; dispatches and follow-ups have stable message ids; a push is compared with the remote first and an MR is looked up before it is created. After a crash the next tick finishes what is missing and duplicates nothing.
+Comments go through a journal in SQLite and carry an `[arceus:…]` marker; dispatches and follow-ups have stable message ids; a push is compared with the remote first and an MR is looked up before it is created. GitLab learns of a pushed branch a moment after the push, so an MR it refuses with `source_branch does not exist` is asked for again up to three times, 1, 2 and 4 seconds apart; past that the next tick publishes it. After a crash the next tick finishes what is missing and duplicates nothing.

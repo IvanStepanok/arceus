@@ -8,6 +8,7 @@ adapter the runner's flow calls (GitLabHost), and the REST client with only the 
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, date, datetime
@@ -108,11 +109,26 @@ class GitLabWriter(GitLab):
 
     def create_mr(self, project_id: int, *, source_branch: str, target_branch: str, title: str, description: str,
                   label: str) -> MergeRequest:
-        resp = self.c.request("POST", f"/api/v4/projects/{project_id}/merge_requests", json={
-            "source_branch": source_branch, "target_branch": target_branch, "title": title,
-            "description": description, "labels": label, "remove_source_branch": False,
-        })
-        return _mr(resp.json())
+        """GitLab takes a push before its API knows the branch: an MR asked for right after the push is refused with
+        `source_branch does not exist` for a moment. That answer is asked again a few times, a few seconds apart;
+        a refusal creates nothing, so asking again cannot make a second MR."""
+        body = {"source_branch": source_branch, "target_branch": target_branch, "title": title,
+                "description": description, "labels": label, "remove_source_branch": False}
+        path = f"/api/v4/projects/{project_id}/merge_requests"
+        for wait in BRANCH_SETTLING:
+            try:
+                return _mr(self.c.request("POST", path, json=body).json())
+            except BadRequest as e:
+                if not _BRANCH_NOT_YET.search(str(e)):
+                    raise
+            _sleep(wait)
+        return _mr(self.c.request("POST", path, json=body).json())
+
+
+# Seconds between the tries of an MR whose branch GitLab does not know yet (GitLabWriter.create_mr).
+BRANCH_SETTLING = (1.0, 2.0, 4.0)
+_sleep = time.sleep
+_BRANCH_NOT_YET = re.compile(r"source_branch[^a-z]+does not exist")
 
 
 # GitLab works mergeability out asynchronously: until it has, it cannot say whether there is a conflict.

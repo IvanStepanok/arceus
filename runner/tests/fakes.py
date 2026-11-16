@@ -191,6 +191,7 @@ class FakeGitLab:
         self.requests: list[httpx.Request] = []
         self.repos = ["acme-platform", "acme-theme", "acme-infra"]
         self.token = {"scopes": ["api"], "expires_at": "2027-06-01", "active": True}
+        self.branch_late = 0  # MR creations refused with "source_branch does not exist" before one goes through
         self.urls: dict[str, str] = {}
         self.descriptions: dict[str, str] = {}
         self.mrs: list[dict] = []
@@ -329,6 +330,9 @@ class FakeGitLab:
                 found = [m for m in self.mrs if m["project_id"] == pid and m["source_branch"] == sb
                          and want in ("all", m["state"])]
                 return json_response(sorted(found, key=lambda m: -m["iid"]))
+            if self.branch_late:  # GitLab's API learns of a pushed branch a moment after the push
+                self.branch_late -= 1
+                return json_response({"message": {"source_branch": ["does not exist"]}}, 400)
             body = json.loads(request.content)
             mr = {**body, "project_id": pid, "iid": len(self.mrs) + 1, "state": "opened",
                   "web_url": f"https://gl/clients/acme/mr/{len(self.mrs) + 1}"}
