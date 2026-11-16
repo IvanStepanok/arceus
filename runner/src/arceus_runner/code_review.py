@@ -64,7 +64,7 @@ from arceus_runner import materials
 from arceus_runner.config import DOC_PATHS, TEST_PATHS, RepoChecks
 from arceus_runner.db import ACTIVE_STATES, REVIEW_UNDER_WAY, ReviewRequest, ReviewStore, Task
 from arceus_runner.texts import ProjectNotesError
-from arceus_runner.engine import EngineError
+from arceus_runner.engine import EngineError, ReportReview
 from arceus_runner.gitops import HOME_BRANCH, GitError, restore_workspace
 from arceus_runner.http import AuthError, NotFound, ServiceError
 from arceus_runner.integrations import Approval, Comment, Issue, IssueDetails, MRStatus, key_part
@@ -82,8 +82,34 @@ FINAL = ("approved", "attention", "changes")
 # "attention" is an approval that also asks a person to look at named changes; "ready" is one that was refused.
 ORDER = ("changes", "unverified", "ready", "attention", "approved")  # the overall outcome is the first one found
 RESUME = "The session was interrupted (a reboot or a crash). Continue the review from where you stopped."
-# On a server Codex checks the reviewer's closing report claim by claim (the engine's report review, at its own round limit). When
-# it still disputes the report at that limit, the run ends `failed`/`needs-user` and nothing in it can be approved. The
+# What the engine's Codex judges the reviewer's closing report by, in place of the server's rule about data changes: a
+# review builds the MRs and runs their tests, which make test databases and containers by their nature, and the server's
+# rule had Codex ask for an account of every table and record they made, round after round, until the review ended
+# unverified. The reviewer is given the same text, so it writes to it from the start.
+REPORT_CRITERIA = """\
+This is the closing report of a code review: a reviewer read one or more merge requests against their ticket, built
+them, ran their tests and checks, and wrote a verdict for each merge request. The report (the outcome's summary) puts
+that verdict in words. The review changed no code. Judge the report by these points, and only these:
+
+1. Each verdict follows from what the reviewer checked. "ready" needs the ticket's requirements met and the build and
+   tests run and passing; a requirement not met, a failing test or a defect found rules it out. A verdict that the
+   code or the reviewer's logs contradict is grounds for FAIL.
+2. Every claim that something was run, passed or failed names the command and what it showed, or the file and line.
+   A check that could not be run is said to be so, never called passed.
+3. A finding points to the place in the code it is about and says what is wrong there. A suggestion is not grounds
+   for FAIL.
+4. The report claims no more than the checks show, and the numbers it gives agree with what it lists.
+5. Data and state the checks made in throwaway places (a test database, a temporary file, a container started for
+   the tests) are expected: naming where they ran is enough. Counting the records or tables they made, recovering
+   their contents or proving each one gone is not asked for. A change to the repositories under review, a push, or
+   anything outside the machine (a real service, a shared database) is grounds for FAIL.
+
+Do not fail the report for its style, for exact counts that do not bear on the verdict, or for checks the ticket did
+not need."""
+REPORT_ROUNDS = 5
+# On a server Codex checks the reviewer's closing report by REPORT_CRITERIA (the engine's report review, at its own
+# round limit). When it still disputes the report at that limit, the run ends `failed`/`needs-user` (`--report-at-limit
+# ask`) and nothing in it can be approved. The
 # reviewer gets the objections back this many times before the review is settled as it stands: a report fixed, or a
 # verdict changed, that Codex then passes counts like any other; one it still disputes is never approved.
 REPORT_REPAIRS = 1
@@ -93,7 +119,7 @@ REPORT_RETURNED = (
     "below. Answer each one: correct the report where it is wrong or unsupported; when an objection shows that your "
     "verdict itself is wrong (a requirement not met, a test that does not pass, a defect), change the verdict file "
     "too. State only what you verified, each claim with its evidence, and for anything you ran that changed data or "
-    "state, where it ran and how it was undone. Then finish with the outcome succeeded_research again.\n\n"
+    "state, where it ran. Then finish with the outcome succeeded_research again.\n\n"
     "## Codex's objections\n\n")
 _REPORT_FAIL = re.compile(r"^\s*VERDICT:\s*FAIL\b", re.MULTILINE)
 MAX_FILE_BYTES = 512 * 1024
@@ -396,6 +422,17 @@ class ReviewAgent:
 
     def _extra_dirs(self, row: ReviewRequest) -> Path:
         return self.cfg.paths.db.parent / "tasks" / row.id / "extra-dirs.txt"
+
+    def _report_review(self, row: ReviewRequest) -> ReportReview:
+        """How the engine's Codex reviews the closing report: by REPORT_CRITERIA, and still disputed at the last
+        round, `ask` (failed / needs-user), so that nothing it disputes is approved (_return_report). The criteria
+        go beside the extra directories, outside the workspace; the engine copies them when it takes the task."""
+        path = self._extra_dirs(row).parent / "report-criteria.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(REPORT_CRITERIA, encoding="utf-8")
+        tmp.replace(path)
+        return ReportReview(rounds=REPORT_ROUNDS, criteria=path, at_limit="ask")
 
     def _note_waiting(self, row: ReviewRequest, reason: str, **fields) -> None:
         seen = (reason, *sorted((k, str(v)) for k, v in fields.items()))
@@ -768,7 +805,8 @@ class ReviewAgent:
         self.d.publish_files(task, files)
         reply = self.d.engine.dispatch(task_id=row.id, message_id=f"review-{row.id}", author=row.author,
                                        source=self.tracker.engine_source, branch=branch, base=HOME_BRANCH,
-                                       repo=Path(ws), text=snap["text"], clearance=clearance, extra_dirs=extra)
+                                       repo=Path(ws), text=snap["text"], clearance=clearance, extra_dirs=extra,
+                                       report_review=self._report_review(row))
         if reply.accepted:
             self.store.update_review(row.id, state="running", started_at=self.d.now().isoformat())
             self.events.emit("review_dispatched", task_id=row.task_id, review=row.id, tier=reply.tier,
@@ -1663,13 +1701,13 @@ class ReviewAgent:
                   "nothing.",
                   "- `summary`: a few sentences for the ticket.",
                   "",
-                  "Your closing report (the outcome's summary) is checked by Codex claim by claim against the "
-                  "code and your logs, and a report it does not accept is never approved. Say only what you "
-                  "verified, each claim with its evidence: the command and what it showed, or the file and line. "
-                  "Leave out what does not bear on the verdict. Anything you ran that changed data or state (a "
-                  "database you seeded, a container you started, a file you wrote) ran somewhere throwaway: say "
-                  "where, and how you removed it.",
-                  "",
+                  "Your closing report (the outcome's summary) is checked by Codex against the code and your logs, "
+                  "and a report it does not accept is never approved. Say only what you verified, each claim with "
+                  "its evidence: the command and what it showed, or the file and line. Leave out what does not bear "
+                  "on the verdict. Anything you ran that changed data or state (a database you seeded, a container "
+                  "you started, a file you wrote) runs somewhere throwaway; say where. Codex judges the report by "
+                  "this:",
+                  "", REPORT_CRITERIA, "",
                   f"Write in English. The runner reads the file and posts the result; you cannot post on "
                   f"{self.tracker.label} or {self.host.label} yourself. Then finish with the outcome "
                   "succeeded_research and the same summary. Never end with needs_input or blocked."]

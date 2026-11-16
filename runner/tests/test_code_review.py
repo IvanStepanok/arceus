@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from datetime import timedelta
 
 import pytest
@@ -71,9 +72,7 @@ def ask(w: World, text: str = "/review", author: str = "j.doe") -> None:
 
 
 def reviews(w: World) -> list[dict]:
-    calls = [c for c in w.calls("dispatch") if c["argv"][1] != "ACME-1"]
-    assert not any(a.startswith("--report") for c in calls for a in c["argv"])   # the engine's own report review
-    return calls
+    return [c for c in w.calls("dispatch") if c["argv"][1] != "ACME-1"]
 
 
 def write_verdict(w: World, rid: str = RID, summary: str = "It does what the ticket asks.", entries=None, **fields):
@@ -1212,11 +1211,23 @@ def test_a_report_return_the_engine_is_busy_for_is_sent_again_as_the_same_messag
     assert json.loads(w.store.review(RID).snapshot)["report_repairs"] == 1
 
 
-def test_the_brief_says_the_closing_report_is_checked_claim_by_claim(w):
+def test_the_closing_report_is_judged_by_the_reviews_own_criteria_and_a_disputed_one_still_asks(w):
+    """Test databases and containers a review makes are expected: Codex judges the report by what a code review is,
+    not by the server's rule about data changes, and at its last round a disputed report still ends the run
+    failed, so nothing it disputes is approved."""
+    from arceus_runner.code_review import REPORT_CRITERIA, REPORT_ROUNDS
     publish(w)
     ask(w)
-    prompt = reviews(w)[0]["argv"][-1]
-    assert "checked by Codex claim by claim" in prompt and "how you removed it" in prompt
+    [call] = reviews(w)
+    argv = call["argv"]
+    assert argv[argv.index("--report-max-rounds") + 1] == str(REPORT_ROUNDS)
+    assert argv[argv.index("--report-at-limit") + 1] == "ask"
+    criteria = Path(argv[argv.index("--report-criteria") + 1])
+    assert criteria.read_text() == REPORT_CRITERIA
+    assert w.cfg.paths.workspace.resolve() not in criteria.resolve().parents  # never makes the workspace dirty
+    assert "Counting the records or tables they made" in REPORT_CRITERIA
+    # The reviewer writes to the same text from the start.
+    assert REPORT_CRITERIA in argv[-1] and "how you removed it" not in argv[-1]
 
 
 # What the real engine's review gate writes for a research run that changed nothing (staging, STG-24).
