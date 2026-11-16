@@ -109,10 +109,10 @@ MIGRATIONS.append(
     """
 )
 
-# Runner task states. Active ones hold the agent; the rest wait on people or are over.
+# Runner task states. Active ones hold the agent; the rest (needs_input, code_review, security_hold, failed, done,
+# stopped) wait on people or are over. security_hold: a text for the agent waits for a security reviewer
+# (screening.py); nothing runs meanwhile.
 ACTIVE_STATES = ("claimed", "dispatched", "publishing")
-# security_hold: a text for the agent waits for a security reviewer (screening.py); nothing runs meanwhile.
-TASK_STATES = (*ACTIVE_STATES, "needs_input", "code_review", "security_hold", "failed", "done", "stopped")
 
 
 class AlreadyRunning(Exception):

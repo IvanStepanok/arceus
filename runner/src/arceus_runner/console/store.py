@@ -20,7 +20,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 ROLES = ("qa", "architect", "operator", "admin")
-STATUSES = ("pending", "active", "disabled")
 # scrypt, from the standard library: about 50 ms and 32 MB per check, so a stolen database is slow to guess at.
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2**15, 8, 1
 SCRYPT_MAXMEM = 64 * 1024 * 1024

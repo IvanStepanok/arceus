@@ -21,8 +21,6 @@ from arceus_runner.gitops import _workspace_umask
 from arceus_runner.screening import Clearance, NotScreened
 
 TIMEOUT = 900
-# Chosen in config.yaml (bulava.*_model, *_effort); bulava.env is for the token and cannot override them.
-MODEL_VARS = ("SUPERVISOR_CLAUDE_MODEL", "SUPERVISOR_CLAUDE_EFFORT", "SUPERVISOR_CODEX_MODEL", "SUPERVISOR_CODEX_EFFORT")
 # What bulava.env may give the engine's commands: the models' credentials and the way out through a proxy. Nothing
 # that changes how a program starts or which program runs (BASH_ENV, LD_PRELOAD, PATH, NODE_OPTIONS, ...).
 TOKEN_VARS = re.compile(r"^(CLAUDE_CODE_OAUTH_TOKEN(_ISSUED_AT)?|ANTHROPIC_API_KEY|OPENAI_API_KEY|CODEX_API_KEY|"

@@ -69,8 +69,6 @@ LOCKED_KEYS = ("paths", "health.devstack_check", "bulava.mcp_config", "tracker.t
 # Folders the console reads (cli._read_dirs): moved outside the data folder, setup.sh mounts them for it.
 MOUNTED_KEYS = ("qa.reports", "qa.instructions", "architect.reports", "architect.instructions")
 
-KINDS_SIMPLE = {"bool", "int", "float", "str", "choice", "duration", "time", "path", "lines", "multi"}
-
 
 @dataclass
 class Field:

@@ -29,7 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 from arceus_runner import materials, replies

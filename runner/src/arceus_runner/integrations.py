@@ -42,7 +42,7 @@ from urllib.parse import quote
 
 if TYPE_CHECKING:
     from arceus_runner.checks import Check
-    from arceus_runner.config import CodeHostConfig, Config, HttpConfig, IssueTrackerConfig, Secrets
+    from arceus_runner.config import CodeHostConfig, Config, IssueTrackerConfig, Secrets
     from arceus_runner.gitops import GitAuth
     from arceus_runner.http import ServiceClient
 

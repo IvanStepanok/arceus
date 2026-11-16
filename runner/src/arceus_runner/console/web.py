@@ -46,7 +46,6 @@ class Settings:
     ops_dir: Path | None = None
     session_idle: timedelta = timedelta(hours=24)
     session_max: timedelta = timedelta(days=14)
-    grafana_path: str = "/grafana/"
 
     @property
     def secure(self) -> bool:

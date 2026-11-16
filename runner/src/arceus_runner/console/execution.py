@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 
 from arceus_runner.config import Config
 from arceus_runner.console import status
@@ -273,16 +273,6 @@ def question(task) -> dict | None:
     return {"text": text, "options": options, "blocked": bool(q.get("blocked")), "unreadable": False,
             # Kept before questions were kept whole: the ticket has the rest.
             "cut": len(text) == OLD_QUESTION_CUT + 1 and text.endswith("…")}
-
-
-def epoch_of(iso_text: str | None) -> float | None:
-    if not iso_text:
-        return None
-    try:
-        at = datetime.fromisoformat(iso_text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return (at if at.tzinfo else at.replace(tzinfo=UTC)).timestamp()
 
 
 def duration(seconds: float) -> str:

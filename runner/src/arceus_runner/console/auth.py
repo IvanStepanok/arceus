@@ -13,7 +13,6 @@ ROLE_WORDS = {
     "admin": ("Admin", "Everything: edits the settings and the project's notes, runs setup, approves people and "
                        "gives them roles."),
 }
-EVERYONE = "Everyone approved sees the status, the reports, the findings and the monitoring."
 
 # action -> the roles that allow it (admin allows everything)
 ACTIONS: dict[str, frozenset[str]] = {

@@ -99,11 +99,6 @@ def _mr(d: dict) -> MergeRequest:
 
 
 class GitLabWriter(GitLab):
-    def open_mr(self, project_id: int, source_branch: str) -> MergeRequest | None:
-        items = self.c.get_json(f"/api/v4/projects/{project_id}/merge_requests",
-                                {"source_branch": source_branch, "state": "opened"})
-        return _mr(items[0]) if items else None
-
     def branch_mr(self, project_id: int, source_branch: str) -> MergeRequest | None:
         """The newest MR from this branch in any state: opened, merged or closed by a person."""
         items = self.c.get_json(f"/api/v4/projects/{project_id}/merge_requests",
