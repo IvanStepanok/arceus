@@ -5,6 +5,7 @@
 <p class="meta task-meta">{% if t.kind_words %}{{ t.kind_words }}{% endif %}{% if t.author %} · tagged by {{ t.author }}{% endif %}
   · {% if t.issue_url %}<a href="{{ t.issue_url }}" target="_blank" rel="noopener">The ticket<span class="external" aria-hidden="true">↗</span><span class="sr"> (opens in a new tab)</span></a>{% else %}no link to the ticket{% endif %}</p>
 
+<p class="notice err stale" role="alert" data-lost hidden><strong>Not updating.</strong> The console has not answered since <span data-lost-at></span>, so what is shown here may be out of date. It keeps trying.</p>
 <div class="task-parts" data-refresh-parts="/tasks/{{ t.key }}/live" data-every="15">
 {% include "task_parts.html" %}
 </div>

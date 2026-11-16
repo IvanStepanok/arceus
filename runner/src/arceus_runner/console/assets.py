@@ -320,97 +320,110 @@ document.addEventListener('submit', function (ev) {
   var q = (b && b.getAttribute('data-confirm')) || ev.target.getAttribute('data-confirm');
   if (q && !window.confirm(q)) ev.preventDefault();
 });
-// Parts of a page that follow the server: data-refresh="<url>" every data-every seconds (default 10), replaced
-// whole by what the URL answers. Stops while the tab is hidden. One request at a time: one that has not answered
-// within a round is given up, so a connection that hangs never piles requests up. When the page has a [data-lost]
+// Following the server: follow(url, every, apply) asks url every `every` ms and hands each answer to apply(html), which
+// puts it on the page and says whether it was the last (data-final). Stops while the tab is hidden; back in a shown tab
+// it asks at once. One request at a time: one that has not answered within a round is given up, so a connection that
+// hangs never piles requests up and an older answer never lands after a newer one. When the page has a [data-lost]
 // notice, it shows once nothing has been answered for two rounds, whether the requests failed or hang, with the time
-// of the last answer in [data-lost-at], and hides on the next answer. Back in a hidden tab, it asks at once and gives
-// the server two rounds again before the notice, which still names the time of the last real answer. When the page has a [data-announce] live
-// region, a screen reader hears the part's headline ([data-reason]) only when it changes, never the part every round.
+// of the last answer in [data-lost-at], and hides on the next answer; back in a hidden tab the server gets two rounds
+// again before the notice, which still names the time of the last real answer. After the last answer it asks no more.
 (function () {
-  var parts = document.querySelectorAll('[data-refresh]');
+var follow = (function () {
   var lost = document.querySelector('[data-lost]');
   var lostAt = document.querySelector('[data-lost-at]');
-  var announce = document.querySelector('[data-announce]');
-  var reasonOf = function (el) { var h = el.querySelector('[data-reason]'); return h ? h.getAttribute('data-reason') : ''; };
-  parts.forEach(function (el) {
-    var every = Math.max(3, parseInt(el.getAttribute('data-every') || '10', 10)) * 1000;
+  return function (url, every, apply) {
     var answered = Date.now();  // the last answer; only an answer moves it
     var resumed = 0;            // when the tab was shown again: the two rounds count from then too
-    var pending = null;
+    var pending = null, over = false, timer, watcher;
     var watch = function () {
-      if (lost && Date.now() - Math.max(answered, resumed) > 2 * every) {
+      if (lost && !over && Date.now() - Math.max(answered, resumed) > 2 * every) {
         if (lostAt) lostAt.textContent = new Date(answered).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', hour12: false});
         lost.hidden = false;
       }
     };
-    var tick = function () {
+    var shown = function () {
       if (document.hidden) return;
+      resumed = Date.now();
+      tick();
+    };
+    var stop = function () {
+      over = true;
+      clearInterval(timer); clearInterval(watcher);
+      document.removeEventListener('visibilitychange', shown);
+    };
+    var tick = function () {
+      if (over || document.hidden) return;
       watch();
       if (pending) return;
       var ctl = window.AbortController ? new AbortController() : null;
       pending = setTimeout(function () { if (ctl) ctl.abort(); }, every);
-      fetch(el.getAttribute('data-refresh'), {credentials: 'same-origin', headers: {'Accept': 'text/html'},
-                                              signal: ctl ? ctl.signal : undefined})
+      fetch(url, {credentials: 'same-origin', headers: {'Accept': 'text/html'}, signal: ctl ? ctl.signal : undefined})
         .then(function (r) { if (r.status === 401) { location.reload(); return null; } return r.ok ? r.text() : null; })
         .then(function (html) {
-          if (html === null) return;
+          if (html === null || over) return;
           answered = Date.now();
           if (lost) lost.hidden = true;
-          var before = reasonOf(el);
-          var keep = el.querySelector('[data-keep-scroll]');
-          var top = keep ? keep.scrollTop : 0;
-          var stuck = keep ? keep.scrollHeight - keep.scrollTop - keep.clientHeight < 24 : false;
-          el.innerHTML = html;
-          var again = el.querySelector('[data-keep-scroll]');
-          if (again) again.scrollTop = stuck ? again.scrollHeight : top;
-          if (announce && reasonOf(el) !== before) {
-            var head = el.querySelector('[data-reason]');
-            announce.textContent = head ? head.textContent.trim() : '';
-          }
-          if (el.querySelector('[data-final]')) { clearInterval(timer); clearInterval(watcher); }
+          if (apply(html)) stop();
         })
         .catch(function () {})
         .then(function () { clearTimeout(pending); pending = null; watch(); });
     };
-    var timer = setInterval(tick, every);
+    timer = setInterval(tick, every);
     // The notice does not wait for a request to end: a hanging one is noticed while it hangs.
-    var watcher = setInterval(function () { if (!document.hidden) watch(); }, 1000);
-    document.addEventListener('visibilitychange', function () {
-      if (document.hidden) return;
-      resumed = Date.now();
-      tick();
+    watcher = setInterval(function () { if (!document.hidden) watch(); }, 1000);
+    document.addEventListener('visibilitychange', shown);
+  };
+})();
+var roundOf = function (el) { return Math.max(3, parseInt(el.getAttribute('data-every') || '10', 10)) * 1000; };
+// Parts of a page that follow the server: data-refresh="<url>" every data-every seconds (default 10), replaced
+// whole by what the URL answers. When the page has a [data-announce] live region, a screen reader hears the part's
+// headline ([data-reason]) only when it changes, never the part every round.
+(function () {
+  var announce = document.querySelector('[data-announce]');
+  var reasonOf = function (el) { var h = el.querySelector('[data-reason]'); return h ? h.getAttribute('data-reason') : ''; };
+  document.querySelectorAll('[data-refresh]').forEach(function (el) {
+    follow(el.getAttribute('data-refresh'), roundOf(el), function (html) {
+      var before = reasonOf(el);
+      var keep = el.querySelector('[data-keep-scroll]');
+      var top = keep ? keep.scrollTop : 0;
+      var stuck = keep ? keep.scrollHeight - keep.scrollTop - keep.clientHeight < 24 : false;
+      el.innerHTML = html;
+      var again = el.querySelector('[data-keep-scroll]');
+      if (again) again.scrollTop = stuck ? again.scrollHeight : top;
+      if (announce && reasonOf(el) !== before) {
+        var head = el.querySelector('[data-reason]');
+        announce.textContent = head ? head.textContent.trim() : '';
+      }
+      return !!el.querySelector('[data-final]');
     });
   });
 })();
 // A page of parts that follow the server together: data-refresh-parts="<url>" every data-every seconds. The URL
-// answers with every part ([data-part="name"]); a part is replaced only when its HTML changed, so one that did not
-// (a question still being read) keeps its text, selection and scroll. A part that comes or goes is put in or left
-// empty by the server itself. Stops while the tab is hidden, and for good once the answer carries data-final.
+// answers with every part ([data-part="name"]) in the page's order; a part is replaced only when its HTML changed, so
+// one that did not (a question still being read) keeps its text, selection and scroll. A part new to the page goes
+// where the server puts it; one that goes is left empty by the server itself. The last answer carries data-final.
 (function () {
   document.querySelectorAll('[data-refresh-parts]').forEach(function (root) {
-    var every = Math.max(3, parseInt(root.getAttribute('data-every') || '10', 10)) * 1000;
-    var timer;
-    var tick = function () {
-      if (document.hidden) return;
-      fetch(root.getAttribute('data-refresh-parts'), {credentials: 'same-origin', headers: {'Accept': 'text/html'}})
-        .then(function (r) { if (r.status === 401) { location.reload(); return null; } return r.ok ? r.text() : null; })
-        .then(function (html) {
-          if (html === null) return;
-          var fresh = document.createElement('template');
-          fresh.innerHTML = html;
-          fresh.content.querySelectorAll('[data-part]').forEach(function (part) {
-            var name = part.getAttribute('data-part');
-            var here = root.querySelector('[data-part="' + name + '"]');
-            if (!here) { root.appendChild(part); return; }
-            if (here.innerHTML.trim() !== part.innerHTML.trim()) here.replaceWith(part);
-          });
-          if (fresh.content.querySelector('[data-final]')) clearInterval(timer);
-        })
-        .catch(function () {});
-    };
-    timer = setInterval(tick, every);
+    follow(root.getAttribute('data-refresh-parts'), roundOf(root), function (html) {
+      var fresh = document.createElement('template');
+      fresh.innerHTML = html;
+      var last = !!fresh.content.querySelector('[data-final]');  // before the parts move out of the answer
+      var prev = null;
+      Array.prototype.forEach.call(fresh.content.querySelectorAll('[data-part]'), function (part) {
+        var here = root.querySelector('[data-part="' + part.getAttribute('data-part') + '"]');
+        if (!here) {
+          if (prev) prev.after(part); else root.prepend(part);
+          here = part;
+        } else if (here.innerHTML.trim() !== part.innerHTML.trim()) {
+          here.replaceWith(part);
+          here = part;
+        }
+        prev = here;
+      });
+      return last;
+    });
   });
+})();
 })();
 """
 

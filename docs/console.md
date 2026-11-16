@@ -173,7 +173,9 @@ An open page follows the task every 15 seconds without a reload: each part (the 
 hold, the live figures and limits, the merge requests, the code reviews) is put in again only when it changed. A
 question still waiting therefore stays exactly as it is while it is read; an answered one goes, the next one comes,
 and merge requests and reviews appear as the runner records them. A task that is over is still followed, since a
-`/continue` on the ticket can take it up again. Nothing on the page acts: answers, `/continue` and security decisions stay on the
+`/continue` on the ticket can take it up again. It asks the way a run's page does: one request at a time, a request
+that hangs given up after one round (so an older answer never lands after a newer one), at once when a hidden tab is
+shown again, and with the same notice when the console has not answered for two rounds. Nothing on the page acts: answers, `/continue` and security decisions stay on the
 ticket, and reloading the page repeats nothing. An unknown or malformed key is not found.
 
 ## Test runs

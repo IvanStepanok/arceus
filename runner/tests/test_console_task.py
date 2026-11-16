@@ -689,3 +689,15 @@ def test_the_page_never_stops_following_a_task_that_a_continue_can_take_up_again
     task(w.store, "ACME-4", "failed", reason="boom", failed_at_ms=int(time.time() * 1000))
     html = page(w, "/tasks/ACME-4/")
     assert "data-final" not in html and 'data-refresh-parts="/tasks/ACME-4/live"' in html
+    assert re.search(r"data-lost\s+hidden", html) and "data-lost-at" in html
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the console's script")
+def test_the_task_page_asks_one_request_at_a_time_never_shows_an_older_answer_and_says_when_it_stops_updating():
+    """The console's own script against a fake task page and clock (console_refresh_parts_check.js): unchanged parts
+    stay, a new part goes in its place, a hung request is given up and its late answer dropped, the notice shows and
+    hides, a tab shown again asks at once, a 401 reloads, and data-final in a changed part ends the asking."""
+    from arceus_runner.console.assets import CONSOLE_JS
+    r = subprocess.run(["node", str(Path(__file__).with_name("console_refresh_parts_check.js"))], input=CONSOLE_JS,
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr + r.stdout
