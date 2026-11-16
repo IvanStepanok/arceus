@@ -17,7 +17,7 @@ from arceus_runner import loop
 from arceus_runner.cli import EXIT_CHECK_FAILED, EXIT_CONFIG, EXIT_OK, main
 from arceus_runner.config import Config, ConfigError, load_config, parse_config
 from arceus_runner.db import ReviewStore
-from arceus_runner.delivery import PROJECT_NOTES_LIMIT
+from arceus_runner.texts import PROJECT_NOTES_LIMIT
 from arceus_runner.engine import Engine
 from arceus_runner.gitops import Git, GitAuth
 from arceus_runner.integrations import build_code_host, build_tracker

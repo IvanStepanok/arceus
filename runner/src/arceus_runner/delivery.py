@@ -17,7 +17,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import unicodedata
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,6 +42,27 @@ from arceus_runner.integrations import (
     usable_repos,
 )
 from arceus_runner.screening import Classify, Gate, is_decision, trusted
+from arceus_runner.texts import (
+    ANSWER_BYTES,
+    QUESTION_KEEP,
+    ProjectNotesError,
+    comments_section,
+    home_files,
+    log_hint,
+    media_section,
+    mr_media_markdown,
+    parent_section,
+    parse_ts,
+    piece_kind,
+    project_notes,
+    research_brief,
+    short_text,
+    slugify,
+    split_answer,
+    ticket_media_text,
+    ticket_pieces,
+    with_media_section,
+)
 
 START_REFUSED = {
     76: "the repository folder is not a git repository",
@@ -67,235 +87,10 @@ CONTINUE = "/continue"  # a comment that starts with this, from someone allowed,
 # Reactions have their own client on the code host (GitLabHost.reactions_client); the rest go to the tracker.
 ACTION_CLIENTS = {"reply": "code_host", "mr_react": "reactions"}
 TAKEN = "eyes"  # the reaction on a command the runner took: the person sees it was seen and will be done
-HOME_IGNORE = """\
-# Every folder here is a repository of the project's group on its code host, cloned by the Arceus runner.
-# This repository holds only the runner's notes for the agent and is never published.
-/*
-!/.gitignore
-!/AGENTS.md
-!/CLAUDE.md
-"""
 
 
 FETCHED_KEPT = 4  # deliveries whose fetched files are kept in memory while they wait (Delivery._fetched): at most
                   # 4 × materials.MAX_TOTAL_BYTES
-PROJECT_NOTES_LIMIT = 16 * 1024  # bytes: every session of every task reads them whole
-PROJECT_NOTES_HEAD = ("These notes come from the people who run this project. Where they contradict the server's "
-                      "notes or the rules above, those win.")
-
-
-class ProjectNotesError(Exception):
-    """paths.project_notes is set, but the agent cannot be given what it holds."""
-
-
-def project_notes(path: Path | None) -> str:
-    """The project's notes as the agent gets them: HTML comments (the template's guidance) left out.
-    Empty when none are set. A file that is set but missing, unreadable or too long is an error, never skipped
-    or cut short: the agent would work without rules the project counts on."""
-    if path is None:
-        return ""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        raise ProjectNotesError(f"paths.project_notes: {path} does not exist") from None
-    except (OSError, UnicodeDecodeError) as e:
-        raise ProjectNotesError(f"paths.project_notes: {path} cannot be read ({e})") from None
-    text = re.sub(r"<!--.*?-->", "", text, flags=re.S).strip()
-    size = len(text.encode())
-    if size > PROJECT_NOTES_LIMIT:
-        raise ProjectNotesError(f"paths.project_notes: {path} is {size} bytes without comments, more than "
-                                f"{PROJECT_NOTES_LIMIT}; shorten it")
-    return text
-
-
-def home_files(where: str, repos: list[Repo], home: Path, notes: str = "") -> dict[str, str]:
-    """What the agent finds where its session starts: what the folder is, its path, the repositories, and
-    the project's notes when there are any. `where` names the scope: GitLab group `clients/acme`."""
-    lines = [f"# {where}", "",
-             "This folder is not a project. Each folder in it is a separate git repository of the group,",
-             "cloned by the Arceus runner and switched to the task's branch.", "",
-             f"Its absolute path (the workspace): `{home}`", "",
-             "- Work out from the ticket which repositories it needs, and change only those.",
-             "- Commit inside each repository you change, on the branch checked out there. Commit nothing",
-             "  in this folder: it belongs to the runner and is never published.",
-             "- Do not push. The runner pushes the commits Codex accepted and opens one merge request per",
-             "  changed repository.", "", "## Repositories", ""]
-    for r in sorted(repos, key=lambda r: r.relative_path):
-        lines.append(f"- `{r.relative_path}`" + (f": {' '.join(r.description.split())}" if r.description else ""))
-    if notes:
-        lines += ["", "## Project notes", "", PROJECT_NOTES_HEAD, "", notes]
-    return {".gitignore": HOME_IGNORE, "AGENTS.md": "\n".join(lines) + "\n", "CLAUDE.md": "@AGENTS.md\n"}
-
-
-def slugify(text: str, limit: int = 40) -> str:
-    ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
-    slug = re.sub(r"[^a-z0-9]+", "-", ascii_text).strip("-")[:limit].strip("-")
-    return slug or "task"
-
-
-def _parse_ts(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-QUESTION_KEEP = 100_000  # characters of a question kept with the task: whole, as posted, for the console's task page
-
-
-def _short(text: str, limit: int = 1500) -> str:
-    text = unattributed(text).strip()
-    return text if len(text) <= limit else text[:limit] + "…"
-
-
-ANSWER_PART = 12_000  # characters per ticket comment: a long answer is posted whole, as several, in order
-ANSWER_BYTES = 512 * 1024  # an answer file larger than this is not read: the agent is asked to shorten it
-_FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
-
-
-def research_brief(answer: Path) -> str:
-    """What the agent is told, after the ticket's own text, when the ticket asks a question instead of a change."""
-    return "\n".join([
-        "## How this ticket is handled", "",
-        "This is a research ticket: the people who queued it want an answer, not a code change. No merge request "
-        "is opened for it, and nothing you commit is published.", "",
-        "- Read the code, its history and whatever else you need, and run what helps you answer: tests, a script, "
-        "the app. Leave every repository as you found it: commit nothing, and undo whatever you changed to check "
-        "something.",
-        f"- Write the full answer in Markdown to `{answer}`. Start with the answer itself, then the evidence for it "
-        "(files and lines, commands and what they showed). Keep what you verified apart from what you assume or "
-        "recommend. The runner posts the file on the ticket as it is, so write it for the people who asked, in "
-        "English.",
-        "- Then declare the outcome succeeded_research, with the answer in a few sentences as the summary.",
-        "- When the answer depends on a decision or access only a person has, ask, as on any ticket.",
-    ])
-
-
-def split_answer(text: str, limit: int = ANSWER_PART) -> list[str]:
-    """The answer in pieces of at most `limit` characters, cut between lines. A code block that a cut falls in is
-    closed at the end of one piece and opened again at the start of the next, so each piece renders on its own."""
-    room = limit - 16  # for the closing fence
-    lines = [ln[i:i + room] for ln in text.splitlines() for i in range(0, max(len(ln), 1), room)]
-    parts: list[str] = []
-    cur: list[str] = []
-    fence: str | None = None  # the opening line of the code block the current piece is inside
-    for line in lines:
-        if cur and sum(len(x) + 1 for x in cur) + len(line) > room:
-            parts.append(_close_piece(cur, fence))
-            cur = [fence] if fence else []
-        cur.append(line)
-        if _FENCE.match(line):
-            fence = None if fence else line.strip()
-    parts.append(_close_piece(cur, fence))
-    return [p for p in parts if p.strip()]
-
-
-def _close_piece(lines: list[str], fence: str | None) -> str:
-    closing = [_FENCE.match(fence).group(1)] if fence else []
-    return "\n".join([*lines, *closing]).strip()
-
-
-def ticket_pieces(head: str, text: str, foot: str = "", tail: str = "") -> list[str]:
-    """A ticket comment with the agent's words in it, never cut: one comment while they fit, else several in
-    order, each marked "Part i of n". `head` opens the first; `tail` (the screenshots) and `foot` (what the reader
-    does next) close the last, so the request to act comes after everything it refers to."""
-    body = split_answer(unattributed(text).strip()) if (text or "").strip() else []
-    n = max(len(body), 1)
-    pieces = []
-    for i in range(1, n + 1):
-        parts = [head] if i == 1 and head else []
-        if n > 1:
-            parts.append(f"**Part {i} of {n}**")
-        if body:
-            parts.append(body[i - 1])
-        if i == n:
-            parts += [x for x in (tail, foot) if x]
-        pieces.append("\n\n".join(parts))
-    return pieces
-
-
-def piece_kind(kind: str, i: int) -> str:
-    """The journal kind of piece `i`: the first keeps the comment's own kind, so a comment posted as one piece
-    before is recognised as the same comment. The others start with `part<i>:`, never with the comment's kind:
-    failures and closings are numbered by counting the kinds that start with theirs."""
-    return kind if i == 1 else f"part{i}:{kind}"
-
-
-MEDIA_BEGIN, MEDIA_END = "<!-- arceus:media -->", "<!-- /arceus:media -->"
-
-
-def media_section(shots: list[str]) -> str:
-    """The MR's screenshots, between markers so a later round can replace them in place."""
-    return "\n\n".join([MEDIA_BEGIN + "\n## Screenshots and recordings", *shots, MEDIA_END]) if shots else ""
-
-
-def with_media_section(description: str, shots: list[str]) -> str:
-    section = media_section(shots)
-    start, end = description.find(MEDIA_BEGIN), description.find(MEDIA_END)
-    if start != -1 and end > start:
-        return description[:start] + section + description[end + len(MEDIA_END):]
-    if not section:
-        return description
-    marker = "\n## Checks"
-    at = description.find(marker)
-    return (description[:at] + "\n\n" + section + description[at:]) if at != -1 else \
-        description.rstrip() + "\n\n" + section
-
-
-def ticket_media_text(tracker: IssueTracker, items: list[media.MediaItem]) -> str:
-    """The comment's own attachments, shown in place the way the tracker does it: a screenshot as a preview, one of
-    unknown size as a link to the file."""
-    def shown(m: media.MediaItem) -> str:
-        if m.shown_as == "link":
-            return tracker.attachment_link(m.upload_name, m.caption)
-        return tracker.attachment_markdown(m.upload_name, m.caption, m.preview_width)
-    return "\n\n".join(["Screenshots and recordings of the change:",
-                         *(f"**{m.caption}**\n\n{shown(m)}" for m in items)])
-
-
-def mr_media_markdown(m: media.MediaItem, url: str) -> str:
-    """An uploaded file in the MR description: a screenshot as a preview that GitLab opens full size on a click,
-    a recording as its player, a screenshot of unknown size as a link to the file."""
-    if m.shown_as == "link":
-        return f"**{m.caption}**\n\n[Open the screenshot: {m.caption}]({url})"
-    width = m.preview_width
-    return f"**{m.caption}**\n\n![{m.caption}]({url})" + (f"{{width={width}}}" if width else "")
-
-
-_CAUSE = re.compile(r"not found|no such file|not on path|\berror\b|\bfailed\b|denied|timed out", re.I)
-
-
-def _log_hint(log: Path) -> str:
-    """The line of a check's log that names the cause: the first error-looking line that is not make's own
-    `*** Error` echo, else the last line."""
-    try:
-        lines = [ln.strip() for ln in log.read_text(errors="replace").splitlines() if ln.strip()]
-    except OSError:
-        return ""
-    hint = next((ln for ln in lines if _CAUSE.search(ln) and not ln.startswith("make: ***")),
-                lines[-1] if lines else "")
-    return _short(hint, 200)
-
-
-def comments_section(comments: list[Comment]) -> str:
-    """People's comments on the ticket, for the agent, oldest first."""
-    lines = ["## Comments on the ticket, oldest first", "",
-             "What people wrote on the ticket. Later comments may change or narrow what the description asks.", ""]
-    for x in comments:
-        body = x.text.strip().replace("\n", "\n  ") or "(no text, only files: see below)"
-        lines.append(f"- {x.author or 'someone unknown'}, {materials._when(x.created)}: {body}")
-    return "\n".join(lines)
-
-
-def parent_section(parent: IssueDetails) -> str:
-    """The parent ticket's words, for a subtask that has none of its own (Delivery._parent)."""
-    return "\n".join([f"## The parent ticket {parent.key}: {parent.summary}", "",
-                      "This ticket has no description of its own. It is a subtask of the ticket below, and what it "
-                      "asks is there:", "", parent.description.strip() or "(the parent has no description either)"])
-
-
 class Delivery:
     def __init__(self, cfg: Config, store: TaskStore, events: EventLog, tracker: IssueTracker, host: CodeHost,
                  engine: Engine, git: Git, classify: Classify, now: Callable[[], datetime] = lambda: datetime.now(UTC)):
@@ -1060,7 +855,7 @@ class Delivery:
                     line += f" failed (exit {c.get('exit_code')})"
                 else:
                     line += " was inconclusive"
-                hint = c.get("note") or _log_hint(path.parent / Path(c.get("artifact") or "").name)
+                hint = c.get("note") or log_hint(path.parent / Path(c.get("artifact") or "").name)
                 if hint:
                     line += f": {hint}"
                 (failed if status == "fail" else unproven).append(line)
@@ -1105,8 +900,8 @@ class Delivery:
                 self.events.emit("attempt_paused_for_limit", task_id=task.task_id, limits=out)
             self.store.update_task(task.task_id, attempt_started=self.now().isoformat())
             return
-        times = [t for t in (_parse_ts((attempts[-1] if attempts else {}).get("started_at")),
-                             _parse_ts(task.attempt_started)) if t]
+        times = [t for t in (parse_ts((attempts[-1] if attempts else {}).get("started_at")),
+                             parse_ts(task.attempt_started)) if t]
         started = max(times) if times else None
         limit = self.cfg.limits.attempt_timeout
         if started and self.now() - started > limit:
@@ -1416,7 +1211,7 @@ class Delivery:
         self.tracker.add_tag(task.issue_db_id, self.cfg.tracker.tags.needs_input)
         # The words go with the state, whole as the ticket got them: the console's task page shows them, and the
         # project's channel (notify.py) quotes them, cut to its own length, whenever it tells the question.
-        words = {"id": q.get("id"), "text": _short(text, QUESTION_KEEP), "options": list(q.get("options") or []),
+        words = {"id": q.get("id"), "text": short_text(text, QUESTION_KEEP), "options": list(q.get("options") or []),
                  "blocked": show.get("state") == "blocked"}
         self.store.update_task(task.task_id, state="needs_input", question_id=q.get("id"),
                                question_at_ms=posted[1] if posted else None, question=json.dumps(words))

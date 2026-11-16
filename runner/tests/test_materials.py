@@ -626,7 +626,7 @@ def test_files_fetched_again_are_given_only_as_the_screened_text_names_them(tmp_
 def test_a_research_brief_below_the_files_counts_against_what_the_screen_reads(w):
     # Staging review, round 2: the brief was added after the files were fitted, and took a research ticket with a
     # text file past the screen's limit, so the whole ticket went to a person.
-    from arceus_runner.delivery import research_brief
+    from arceus_runner.texts import research_brief
     brief = len(research_brief(w.cfg.paths.workspace / ".arceus" / "notes" / "ACME-1" / "answer-1.md"))
     db_id = queue(w, description="r" * (MAX_CHARS - 20_000 - 1_000 - brief // 2))
     w.yt.issue_tags[db_id].add("agent-research")

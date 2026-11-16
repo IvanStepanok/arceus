@@ -19,7 +19,7 @@ import pytest
 
 from arceus_runner import loop
 from arceus_runner.config import Config
-from arceus_runner.delivery import PROJECT_NOTES_LIMIT, ProjectNotesError, project_notes
+from arceus_runner.texts import PROJECT_NOTES_LIMIT, ProjectNotesError, project_notes
 from arceus_runner.db import ReviewStore as TaskStore
 from arceus_runner.engine import Engine
 from arceus_runner.events import EventLog

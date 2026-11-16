@@ -8,7 +8,7 @@ import re
 
 import pytest
 
-from arceus_runner.delivery import ANSWER_PART, split_answer
+from arceus_runner.texts import ANSWER_PART, split_answer
 
 from .test_delivery import World, git, no_real_tools, take  # noqa: F401  (no_real_tools: autouse)
 

@@ -34,7 +34,7 @@ from pathlib import Path
 from arceus_runner.code_review import ReviewAgent
 from arceus_runner.config import Config
 from arceus_runner.db import RUN_UNDER_WAY, AgentRun, ReviewStore, Task
-from arceus_runner.delivery import ProjectNotesError, project_notes
+from arceus_runner.texts import ProjectNotesError, project_notes
 from arceus_runner.engine import EngineError, ReportReview
 from arceus_runner.gitops import HOME_BRANCH, GitError, restore_workspace
 from arceus_runner.http import ServiceError

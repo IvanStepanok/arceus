@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from arceus_runner import media
-from arceus_runner.delivery import mr_media_markdown, ticket_media_text
+from arceus_runner.texts import mr_media_markdown, ticket_media_text
 
 from .test_delivery import WEBM, png_header
 

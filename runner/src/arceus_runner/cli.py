@@ -16,7 +16,7 @@ from arceus_runner.checks import Check, run_online_checks
 from arceus_runner.cleanup import _human
 from arceus_runner.config import DEFAULT_CONFIG, Config, ConfigError, Secrets, load_config, load_secrets
 from arceus_runner.db import ACTIVE_STATES, RUN_UNDER_WAY, AlreadyRunning, InstanceLock, ReviewStore
-from arceus_runner.delivery import PROJECT_NOTES_LIMIT, ProjectNotesError, project_notes
+from arceus_runner.texts import PROJECT_NOTES_LIMIT, ProjectNotesError, project_notes
 from arceus_runner.engine import Engine
 from arceus_runner.health import engine_doctor, local_checks
 from arceus_runner.events import EventLog
@@ -130,7 +130,7 @@ def review_agent_check(cfg: Config) -> Check:
 
 
 def project_notes_check(cfg: Config) -> Check:
-    """Whether the project's notes for the agent can be given to it as they are (delivery.project_notes)."""
+    """Whether the project's notes for the agent can be given to it as they are (texts.project_notes)."""
     path = cfg.paths.project_notes
     try:
         notes = project_notes(path)

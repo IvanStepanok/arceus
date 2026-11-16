@@ -40,7 +40,7 @@ RUN_STATE_WORDS = {"pending": "Queued", "preparing": "Preparing the workspace", 
                    "publishing": "Writing the report", "done": "Finished"}
 WINDOW_WORDS = {"5h": "5-hour", "7d": "7-day"}
 PROVIDER_WORDS = {"claude": "Claude", "codex": "Codex"}
-# The question as the runner kept it before it kept it whole (delivery._short): cut at 1500 with an ellipsis.
+# The question as the runner kept it before it kept it whole (texts.short_text): cut at 1500 with an ellipsis.
 OLD_QUESTION_CUT = 1500
 
 

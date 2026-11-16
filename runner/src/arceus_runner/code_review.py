@@ -63,7 +63,7 @@ from pathlib import Path
 from arceus_runner import materials
 from arceus_runner.config import DOC_PATHS, TEST_PATHS, RepoChecks
 from arceus_runner.db import ACTIVE_STATES, REVIEW_UNDER_WAY, ReviewRequest, ReviewStore, Task
-from arceus_runner.delivery import ProjectNotesError
+from arceus_runner.texts import ProjectNotesError
 from arceus_runner.engine import EngineError
 from arceus_runner.gitops import HOME_BRANCH, GitError, restore_workspace
 from arceus_runner.http import AuthError, NotFound, ServiceError
