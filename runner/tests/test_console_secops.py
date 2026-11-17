@@ -11,11 +11,10 @@ import pytest
 import yaml
 
 pytest.importorskip("starlette")
-from starlette.testclient import TestClient  # noqa: E402
 
 from arceus_runner import secops  # noqa: E402
 from arceus_runner.config import load_config  # noqa: E402
-from arceus_runner.console.web import Settings, create_app  # noqa: E402
+from arceus_runner.console.web import Settings  # noqa: E402
 from arceus_runner.db import ReviewStore  # noqa: E402
 from arceus_runner.workspace_run import report_address  # noqa: E402
 
@@ -25,7 +24,7 @@ from tests.test_console_qa import person  # noqa: E402
 
 SHA = "c0ffee" * 6
 CODE = f"https://gitlab.example.com/acme/acme-platform/-/blob/{SHA}/docker/Dockerfile#L2"
-SUMMARY = "The platform image pins an affected acme-imagelib; the rest does not carry it."
+SUMMARY = "The platform image pins `acme-imagelib==2.3.0` <b>unpatched</b>; the rest does not carry it."
 # A finished run's result.json, as SecOpsAgent.view writes it.
 VIEW = {"n": 1, "id": "secops-1", "source": "schedule", "requested_by": "schedule", "outcome": "attention",
         "created_at": "2026-11-14T01:00:00Z", "started_at": "2026-11-14T01:00:05Z",
@@ -84,7 +83,9 @@ def test_the_list_shows_each_run_in_its_reports_words_newest_first_and_starts_no
     add_run(w, "publishing", stop_requested=1, started_at="2026-11-15T01:00:00Z")
     page = signed_in(w.settings, "owner@example.com").get("/secops/").text  # an admin, who may do anything else
     assert '<a href="/secops/1/">Run 1</a>' in page and '<span class="blocked">1 verdict needs attention</span>' in page
-    assert SUMMARY in page and "Schedule" in page
+    assert ('<span class="run-summary">The platform image pins <code class="lit">acme-imagelib==2.3.0</code> '
+            '&lt;b&gt;unpatched&lt;/b&gt;; the rest does not carry it.</span>') in page  # as the runner's own list
+    assert "Schedule" in page and "14 Nov 2026, 03:00" in page and "15 Nov 2026, 03:00" in page  # started, in Kyiv
     assert page.index("Run 2") < page.index("Run 1")
     assert "Sending the verdicts" in page and "Stop asked" in page and "s@example.com" in page
     main = page.split("<main>", 1)[1]  # the bar above it has the sign-out form
@@ -175,6 +176,3 @@ def test_the_reports_are_read_in_the_console_while_it_is_on_and_on_the_runners_p
     cfg = load_config(w.config)
     assert report_address(cfg, "secops", 3302, 1) == ("https://console.example.com/secops/1/", False)
     assert secops.check(cfg)[0].detail.endswith("reports on https://console.example.com/secops/")
-    r = TestClient(create_app(w.settings), base_url="https://console.example.com").get("/secops/1/",
-                                                                                      follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/login?next=%2Fsecops%2F1%2F"

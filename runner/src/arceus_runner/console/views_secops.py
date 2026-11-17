@@ -10,8 +10,9 @@ from starlette.routing import Route
 from arceus_runner import secops
 from arceus_runner.console import runs
 from arceus_runner.console.store import ConsoleError
-from arceus_runner.console.web import Ctx, page
+from arceus_runner.console.web import Ctx, Markup, page
 from arceus_runner.db import ReviewStore
+from arceus_runner.qa_report import rich
 
 SECTIONS = ("/secops/",)
 
@@ -34,6 +35,8 @@ def index(ctx: Ctx) -> Response:
             rows, error = secops.index_rows(store, cfg.secops.reports), ""
         finally:
             store.close()
+    for r in rows:  # escaped, with the code in it set as code, as the runner's own list shows it (render_index)
+        r["summary"] = Markup(rich(r["summary"]))
     return ctx.render("runs.html", title="Advisory triage", kind="secops",
                       rows=runs.dress(rows, secops.head_of, "secops"), enabled=cfg.secops.enabled, error=error,
                       mode=cfg.mode, schedule=cfg.secops.schedule)
