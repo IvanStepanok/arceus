@@ -244,6 +244,18 @@ def test_the_page_warns_when_the_agent_would_get_nothing(w):
     assert "is empty (comments only)" in page and "a run would stop at once" in page
 
 
+def test_a_status_line_breaks_a_long_path_inside_its_card():
+    """The status line under "What the agent gets" carries the file's full path, which has no spaces to break at:
+    the line itself wraps it, whatever its tone, so the path stays inside the narrow card and whole. The same path
+    above the editor wraps too, or on a phone it would stretch the whole form past the screen, and so does a notice,
+    which shows the same path when the file cannot be read."""
+    from arceus_runner.console.assets import CONSOLE_CSS
+    rule = re.search(r"^\.value-line \{([^}]*)\}", CONSOLE_CSS, re.M).group(1)
+    assert "overflow-wrap: anywhere" in rule
+    assert re.search(r"^\.file-split \.lit \{[^}]*overflow-wrap: anywhere", CONSOLE_CSS, re.M)
+    assert re.search(r"^\.notice \{[^}]*overflow-wrap: anywhere", CONSOLE_CSS, re.M)
+
+
 
 # -- scenarios ---------------------------------------------------------------------------------------------------
 

@@ -49,7 +49,8 @@ main { width: 100%; max-width: 1040px; flex: 1 0 auto; }
 .linkish:hover { color: var(--ink); }
 .meta { color: var(--muted); font-size: 0.925rem; }
 .lede { color: var(--muted); margin: 4px 0 24px; max-width: 46rem; }
-.notice { margin: 0 0 20px; padding: 10px 14px; border-radius: 8px; background: var(--good-soft); color: var(--ink); }
+.notice { margin: 0 0 20px; padding: 10px 14px; border-radius: 8px; background: var(--good-soft); color: var(--ink);
+          overflow-wrap: anywhere; }
 .notice.err { background: var(--bad-soft); }
 .notice.warn { background: var(--warn-soft); }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 20px;
@@ -124,7 +125,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-
 .value.good, .value-line.good { color: var(--good); } .value.bad { color: var(--bad); }
 .value.unknown, .value-line.unknown { color: var(--quiet); }
 .tile .value.good, .tile .value.bad, .tile .value.unknown { font-size: 1.15rem; padding-top: 6px; }
-.value-line { margin: 0; font-weight: 600; }
+.value-line { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
 .home-split { grid-template-columns: minmax(0, 1fr) minmax(0, 22rem); margin-top: 28px; }
 .home-split > div > h2:first-child { margin-top: 0; }
 .rows { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--line);
@@ -196,6 +197,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-
 .btn.small { min-height: 28px; padding: 2px 10px; font-size: 0.85rem; }
 .report > .crumb:first-child { margin-top: 0; }
 .file-split { grid-template-columns: minmax(0, 1fr) minmax(0, 20rem); }
+.file-split .lit { overflow-wrap: anywhere; }
 pre.diff { margin: 0 0 20px; padding: 12px 0; background: var(--surface); border: 1px solid var(--line);
            border-radius: 8px; overflow-x: auto; font: 0.85rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 pre.diff span { display: block; padding: 0 14px; white-space: pre; }
