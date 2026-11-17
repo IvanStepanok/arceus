@@ -14,12 +14,26 @@ trap 'exit 130' INT TERM HUP  # killed (a timeout): the EXIT trap still cleans u
 fails=0
 check() { if eval "$2"; then printf 'ok   %s\n' "$1"; else printf 'FAIL %s\n' "$1"; fails=$((fails + 1)); fi; }
 
-# The build folder exactly as apply_console makes it: runner/ with pyproject.toml and src/, nothing else.
-mkdir -p "$T/build/runner" "$T/data"
+# The build folder exactly as apply_console makes it: runner/ with pyproject.toml and src/, and extra/ with the
+# wheels of setup.conf's RUNNER_EXTRA_PACKAGES, nothing else. First with none, as on most installs.
+mkdir -p "$T/build/runner" "$T/build/extra" "$T/data"
 rsync -a --exclude __pycache__ --exclude '*.egg-info' --exclude build \
   "$ROOT/runner/pyproject.toml" "$ROOT/runner/src" "$T/build/runner/"
 docker build --quiet --label arceus.keep=true -t "$TAG" -f "$ROOT/console/Dockerfile" "$T/build" > "$T/build.log" 2>&1
-check "the image builds from console/Dockerfile and runner/" "[ $? = 0 ]" || cat "$T/build.log"
+check "the image builds from console/Dockerfile and runner/, with no extra package" "[ $? = 0 ]" || cat "$T/build.log"
+
+# Then with one: a provider kept outside this repository, as a wheel built the way apply_extra_packages builds it.
+mkdir -p "$T/acme/src/acme_register"
+printf '[build-system]\nrequires = ["setuptools>=68"]\nbuild-backend = "setuptools.build_meta"\n[project]\nname = "acme-register"\nversion = "0.1.0"\n' \
+  > "$T/acme/pyproject.toml"
+echo 'REGISTER = "acme"' > "$T/acme/src/acme_register/__init__.py"
+"$ROOT/runner/.venv/bin/pip" wheel --quiet --disable-pip-version-check --no-deps --wheel-dir "$T/build/extra" "$T/acme" \
+  > "$T/wheel.log" 2>&1 || cat "$T/wheel.log"
+docker build --quiet --label arceus.keep=true -t "$TAG-extra" -f "$ROOT/console/Dockerfile" "$T/build" > "$T/build.log" 2>&1
+check "with a wheel in extra/, the image builds" "[ $? = 0 ]" || cat "$T/build.log"
+check "and the console's Python imports it" \
+  "[ \"\$(docker run --rm --entrypoint /opt/console/bin/python $TAG-extra -c 'import acme_register; print(acme_register.REGISTER)')\" = acme ]"
+docker image rm -f "$TAG-extra" >/dev/null 2>&1
 
 echo "GITLAB_TOKEN=glpat-secret" > "$T/data/secrets.env"
 chmod -R a+rwX "$T/data"

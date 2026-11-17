@@ -18,3 +18,11 @@ WORKSPACE_MCP_VERSION=2.3.0
 # check engine/SERVER.md, re-run setup between tasks (it refuses while a task is running).
 BULAVA_SOURCE=https://github.com/Stepanokdev/bulava
 BULAVA_REF=4df1ea09ae0aa405682bff89cad6740a05c2bc7c   # main, 1.20 (2026-11-14)
+
+# Python packages of this install's own: a tracker, a code host or an advisory register kept outside this
+# repository (docs/integrations.md), whose module config.yaml names in `type`. Pip requirements separated by
+# spaces: a git URL pinned to a commit or tag (git+https://host/group/repo@<commit>) or a folder on this machine.
+# Setup builds each into a wheel without its dependencies, installs it into the runner's virtualenv and into the
+# console's image, and uninstalls one that leaves the list. A changed list, or a changed file in a listed folder,
+# installs again; an unpinned URL does not follow its branch, so pin it and change the pin to update. Empty: none.
+RUNNER_EXTRA_PACKAGES=

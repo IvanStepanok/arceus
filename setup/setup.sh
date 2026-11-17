@@ -54,6 +54,7 @@ RUN_USER="${SUDO_USER:-$REPO_OWNER}"
 : "${WORKSPACE_MCP_VERSION:=}"
 : "${BULAVA_SOURCE:=}"
 : "${BULAVA_REF:=}"
+: "${RUNNER_EXTRA_PACKAGES:=}"
 
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 RUN_GROUP="$(id -gn "$RUN_USER" 2>/dev/null || true)"
@@ -70,6 +71,10 @@ OAUTH_ENV="$RUN_HOME/.config/claude/oauth.env"
 CLAUDE_LOGIN="$RUN_HOME/.claude/.credentials.json"
 TOOLS=/opt/agent-tools
 RUNNER_OPT=/opt/arceus-runner
+# The wheels of RUNNER_EXTRA_PACKAGES: built once, installed into the runner's virtualenv and into the console's
+# image from the same files. EXTRA_INSTALLED lists the distributions setup put there, to take out dropped ones.
+EXTRA_DIR="$RUNNER_OPT/extra"
+EXTRA_INSTALLED="$RUNNER_OPT/.extra-installed"
 BULAVA_DIR=/opt/bulava
 MCP_CONFIG=/opt/bulava-local/mcp.json
 # Google Sheets, Docs and Drive for the agent, read-only (workspace-mcp): its own venv under TOOLS, and the
@@ -443,9 +448,69 @@ apply_bulava_install() {
   engine_stamp > "$INSTALLED_STAMP"
 }
 
+# Python packages of this install's own beside the runner (setup.conf RUNNER_EXTRA_PACKAGES): a tracker, a code
+# host or an advisory register kept outside this repository (docs/integrations.md), one pip requirement each.
+extra_packages() {
+  local list
+  read -ra list <<< "${RUNNER_EXTRA_PACKAGES//$'\n'/ }"   # words: spaces and new lines alike
+  [ "${#list[@]}" = 0 ] || printf '%s\n' "${list[@]}"
+}
+# What the extra packages are, for the hashes below: each requirement, and for a folder on this machine the
+# contents of its files too, so an edit there installs again as a changed list does (a new commit in a pinned URL).
+extra_fingerprint() {
+  local req
+  extra_packages | while IFS= read -r req; do
+    printf '%s\n' "$req"
+    [ -d "$req" ] || continue
+    (cd "$req" && find . -type f ! -path './.git/*' ! -path '*/__pycache__/*' ! -name '*.pyc' \
+      ! -path './build/*' ! -path './dist/*' ! -path '*.egg-info*' -print0 | sort -z | xargs -0 sha256sum)
+  done
+}
+# A hash of what goes into an install, with the extra packages when there are any. Without them it is the hash of
+# the sources alone, as before the setting existed.
+with_extra() {  # $1: the sources' hash
+  if [ -z "$(extra_packages)" ]; then printf '%s\n' "$1"
+  else { printf '%s\n' "$1"; extra_fingerprint; } | sha256sum | cut -d' ' -f1
+  fi
+}
+extra_names() {  # the distributions of the wheels in EXTRA_DIR, one per line
+  local w
+  for w in "$EXTRA_DIR"/*.whl; do [ -e "$w" ] && basename "$w" | cut -d- -f1; done
+  return 0
+}
+extra_installed_ok() {
+  local name
+  [ "$(extra_names)" = "$(cat "$EXTRA_INSTALLED" 2>/dev/null || true)" ] || return 1
+  for name in $(extra_names); do
+    "$RUNNER_OPT/venv/bin/pip" show --quiet "$name" >/dev/null 2>&1 || return 1
+  done
+}
+# Builds the wheels with the runner's pip, without their dependencies (a module uses what the runner has:
+# httpx, pydantic, PyYAML), installs them, and uninstalls the ones setup put there before that left the list.
+apply_extra_packages() {
+  local pip="$RUNNER_OPT/venv/bin/pip" name packages=() now
+  rm -rf "$EXTRA_DIR"
+  install -d -m 755 -o root -g root "$EXTRA_DIR"
+  read -ra packages <<< "$(extra_packages | tr '\n' ' ')"
+  if [ "${#packages[@]}" -gt 0 ]; then
+    say "  extra packages (RUNNER_EXTRA_PACKAGES): ${packages[*]}"
+    "$pip" wheel --quiet --disable-pip-version-check --no-deps --wheel-dir "$EXTRA_DIR" "${packages[@]}" \
+      || die "RUNNER_EXTRA_PACKAGES: pip could not fetch or build ${packages[*]}"
+    "$pip" install --quiet --disable-pip-version-check --no-deps --force-reinstall "$EXTRA_DIR"/*.whl \
+      || die "RUNNER_EXTRA_PACKAGES: pip could not install the wheels in $EXTRA_DIR"
+  fi
+  now="$(extra_names)"
+  for name in $(cat "$EXTRA_INSTALLED" 2>/dev/null || true); do
+    grep -qxF "$name" <<< "$now" && continue
+    "$pip" uninstall --quiet --yes "$name" >/dev/null 2>&1 || true
+    say "  removed $name: no longer in RUNNER_EXTRA_PACKAGES"
+  done
+  printf '%s' "$now" > "$EXTRA_INSTALLED"
+}
+
 runner_source_hash() {
-  (cd "$REPO_DIR/runner" && find pyproject.toml src -type f \( -name '*.py' -o -name '*.toml' \) -print0 \
-    | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+  with_extra "$(cd "$REPO_DIR/runner" && find pyproject.toml src -type f \( -name '*.py' -o -name '*.toml' \) -print0 \
+    | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
 }
 # The marker only says what was last handed to pip; this compares what pip actually installed.
 runner_installed_matches() {
@@ -458,6 +523,7 @@ check_runner() {
   [ -x "$RUNNER_OPT/venv/bin/arceus-runner" ] || return 1
   [ "$(cat "$RUNNER_OPT/.source-sha256" 2>/dev/null)" = "$(runner_source_hash)" ] || return 1
   runner_installed_matches || return 1
+  extra_installed_ok || return 1
   [ -f "$DATA_DIR/config.yaml" ] && [ -f "$DATA_DIR/secrets.env" ] && [ -f "$DATA_DIR/bulava.env" ] \
     && [ -f "$DATA_DIR/project-notes.md" ] || return 1
   ! grep -q '^CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-replace-me$' "$DATA_DIR/bulava.env" || return 1
@@ -480,6 +546,7 @@ apply_runner() {
   # updated module, and setuptools would then install the old copy. Every install builds from scratch.
   rm -rf "$RUNNER_OPT/src/build" "$RUNNER_OPT/src/src/"*.egg-info
   "$RUNNER_OPT/venv/bin/pip" install --quiet --disable-pip-version-check --upgrade "$RUNNER_OPT/src"
+  apply_extra_packages
   runner_source_hash > "$RUNNER_OPT/.source-sha256"
   chown -R root:root "$RUNNER_OPT"; chmod -R go-w "$RUNNER_OPT"
   # Examples are copied once. Whatever is there already is the operator's and stays untouched.
@@ -732,10 +799,10 @@ console_enabled() { [ "$(console_get CONSOLE_ENABLED)" = 1 ]; }
 console_compose() {
   docker compose --project-directory "$CONSOLE_DIR" -f "$CONSOLE_DIR/compose.yaml" -f "$CONSOLE_DIR/mounts.yaml" "$@"
 }
-console_source_hash() {   # the image is built from runner/ and console/: its tag is their hash
-  (cd "$REPO_DIR" && find console runner/pyproject.toml runner/src -type f ! -path '*/__pycache__/*' \
+console_source_hash() {   # the image is built from runner/, console/ and the extra packages: its tag is their hash
+  with_extra "$(cd "$REPO_DIR" && find console runner/pyproject.toml runner/src -type f ! -path '*/__pycache__/*' \
     ! -name '*.pyc' ! -path '*.egg-info*' ! -path 'runner/src/build/*' -print0 | sort -z | xargs -0 sha256sum \
-    | sha256sum | cut -c1-16)
+    | sha256sum | cut -d' ' -f1)" | cut -c1-16
 }
 console_env() {
   printf '%s\n' "CONSOLE_IMAGE_TAG=$(console_source_hash)" "RUN_UID=$(id -u "$RUN_USER")" \
@@ -1024,6 +1091,12 @@ apply_console() {
   install -d -m 755 -o root -g root "$CONSOLE_DIR/build/runner"
   rsync -a --delete --exclude __pycache__ --exclude '*.egg-info' --exclude build \
     "$REPO_DIR/runner/pyproject.toml" "$REPO_DIR/runner/src" "$CONSOLE_DIR/build/runner/"
+  # The same wheels the runner has: the console reads config.yaml, so it must import every provider it names.
+  [ "$(cat "$RUNNER_OPT/.source-sha256" 2>/dev/null || true)" = "$(runner_source_hash)" ] \
+    || die "the runner is not installed as setup.conf says (RUNNER_EXTRA_PACKAGES?): run the runner phase first"
+  rm -rf "$CONSOLE_DIR/build/extra"
+  install -d -m 755 -o root -g root "$CONSOLE_DIR/build/extra"
+  [ ! -d "$EXTRA_DIR" ] || cp -a "$EXTRA_DIR/." "$CONSOLE_DIR/build/extra/"
   chown -R root:root "$CONSOLE_DIR"; chmod -R go-w "$CONSOLE_DIR"
   local tag; tag="$(console_source_hash)"
   if ! docker image inspect "arceus-console:$tag" >/dev/null 2>&1; then

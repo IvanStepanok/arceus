@@ -37,8 +37,10 @@ step "setup: the agent's Google MCP server is read-only and acts as the service 
   bash setup/tests/test-google-mcp.sh
 step "setup: the console sees the data folder without its secrets; nginx trusts only the given proxies" \
   bash setup/tests/test-console.sh
+step "setup: the install's own packages go into the runner, leave it with the list, and change nothing unset" \
+  bash setup/tests/test-extra-packages.sh
 if [ -n "$live" ]; then  # the base image and PyPI: the network, so not in --offline
-  step "console: the image builds from console/Dockerfile and runs without root, sudo or secrets" \
+  step "console: the image builds from console/Dockerfile, with the install's own packages, and runs without root, sudo or secrets" \
     bash setup/tests/test-console-image.sh
   step "console: nginx lets into Grafana only whom the console names, as Viewer or Admin" \
     bash setup/tests/test-console-proxy.sh

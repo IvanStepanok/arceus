@@ -34,7 +34,7 @@ Jira, GitHub or anything else can be added without touching the runner's flow:
    - the config section: a subclass of `IssueTrackerConfig` or `CodeHostConfig` with your keys;
    - the adapter: a class with the methods of `IssueTracker` or `CodeHost`;
    - `TRACKER = TrackerType(config=..., build=...)` or `CODE_HOST = CodeHostType(...)`.
-2. Register it. In this repository, add a line to `BUILTIN_TRACKERS` or `BUILTIN_CODE_HOSTS` in `integrations.py` and use its short name as `type`. Outside it, install your package next to the runner and put its module path in `type`.
+2. Register it. In this repository, add a line to `BUILTIN_TRACKERS` or `BUILTIN_CODE_HOSTS` in `integrations.py` and use its short name as `type`. Outside it, name your package in `RUNNER_EXTRA_PACKAGES` in `setup.conf` (below) and put its module path in `type`.
 3. Run `arceus-runner check`. An unknown `type`, a missing key or a key the provider does not know is reported before anything starts.
 
 What every implementation has to keep:
@@ -66,6 +66,8 @@ A company that keeps its advisories in a service of its own (a web app, a ticket
 - the adapter: a class with the members of `AdvisoryRegister`, below;
 - `REGISTER = RegisterType(config=..., build=...)`, where `build(section, secret, http config, transport=None)` returns the adapter. `secops.register.type` is then the module's path, e.g. `acme_arceus.register`.
 
+It is installed like a tracker or a code host of your own ([below](#installing-a-provider-of-your-own)).
+
 What the adapter does, and nothing more; the runner keeps the rest (screening, the earlier verdicts, the send-once record, the report):
 
 | Member | What it does |
@@ -78,3 +80,16 @@ What the adapter does, and nothing more; the runner keeps the rest (screening, t
 | `close()` | the runner stops: close what you hold open. |
 
 Errors are `http.py`'s, as for the other two. A refusal of a verdict is `BadRequest` or `NotFound` with your register's own words in `body`: the report shows them. No answer is `TransientError`: reading is tried again for half an hour, and any other error ends the run there, saying why. While sending, every error but a refusal is tried again for an hour; then the report says which verdicts did not go. `ServiceClient` gives you the pause and backoff. The in-memory register the tests use, [`runner/tests/memory_providers.py`](../runner/tests/memory_providers.py), is a small example, and [`advisory_files.py`](../runner/src/arceus_runner/advisory_files.py) a complete one.
+
+## Installing a provider of your own
+
+Both the runner and the web console read `config.yaml`, so both must import every module it names in `type`: the runner in `/opt/arceus-runner/venv`, the console in its own Docker image. A module of a single install goes in `setup.conf`, which is that install's own file and not part of this repository:
+
+```sh
+RUNNER_EXTRA_PACKAGES="git+https://git.example.com/acme/acme-arceus@4f2c9e1"
+```
+
+Pip requirements separated by spaces: a git URL pinned to a commit or tag, or a folder on the machine. `sudo ./setup.sh` builds each into a wheel in `/opt/arceus-runner/extra`, installs it into the runner's virtualenv and the same file into the console's image, and uninstalls one that leaves the list. The wheels are built without their dependencies: a module uses what the runner has (`httpx`, `pydantic`, `PyYAML`) and declares none, `arceus-runner` included. A changed list, or a changed file in a listed folder, installs again and rebuilds the image; a URL that names a branch is not followed, so pin it and change the pin to update. Then `arceus-runner check` and a restart of the runner.
+
+Installed by hand with `pip`, a module is gone the next time setup makes the virtualenv or the image again, and with it the runner (an unknown `type` stops it) and the console's pages.
+
