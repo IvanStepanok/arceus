@@ -487,15 +487,28 @@ extra_installed_ok() {
 }
 # Builds the wheels with the runner's pip, without their dependencies (a module uses what the runner has:
 # httpx, pydantic, PyYAML), installs them, and uninstalls the ones setup put there before that left the list.
+# A folder is built from a copy without what an earlier build left in it (build/, dist/, *.egg-info): a backend
+# that reuses build/lib could put a module since removed back into the wheel, and root would write into the folder.
 apply_extra_packages() {
-  local pip="$RUNNER_OPT/venv/bin/pip" name packages=() now
+  local pip="$RUNNER_OPT/venv/bin/pip" name packages=() reqs=() req copy work now
   rm -rf "$EXTRA_DIR"
   install -d -m 755 -o root -g root "$EXTRA_DIR"
   read -ra packages <<< "$(extra_packages | tr '\n' ' ')"
   if [ "${#packages[@]}" -gt 0 ]; then
     say "  extra packages (RUNNER_EXTRA_PACKAGES): ${packages[*]}"
-    "$pip" wheel --quiet --disable-pip-version-check --no-deps --wheel-dir "$EXTRA_DIR" "${packages[@]}" \
-      || die "RUNNER_EXTRA_PACKAGES: pip could not fetch or build ${packages[*]}"
+    work="$(mktemp -d)"
+    for req in "${packages[@]}"; do
+      if [ -d "$req" ]; then
+        copy="$work/${#reqs[@]}-$(basename "$req")"
+        rsync -a --exclude /build/ --exclude /dist/ --exclude '*.egg-info' --exclude __pycache__/ "$req/" "$copy/"
+        reqs+=("$copy")
+      else
+        reqs+=("$req")
+      fi
+    done
+    "$pip" wheel --quiet --disable-pip-version-check --no-deps --wheel-dir "$EXTRA_DIR" "${reqs[@]}" \
+      || { rm -rf "$work"; die "RUNNER_EXTRA_PACKAGES: pip could not fetch or build ${packages[*]}"; }
+    rm -rf "$work"
     "$pip" install --quiet --disable-pip-version-check --no-deps --force-reinstall "$EXTRA_DIR"/*.whl \
       || die "RUNNER_EXTRA_PACKAGES: pip could not install the wheels in $EXTRA_DIR"
   fi

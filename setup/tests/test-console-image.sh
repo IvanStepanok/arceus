@@ -27,7 +27,7 @@ mkdir -p "$T/acme/src/acme_register"
 printf '[build-system]\nrequires = ["setuptools>=68"]\nbuild-backend = "setuptools.build_meta"\n[project]\nname = "acme-register"\nversion = "0.1.0"\n' \
   > "$T/acme/pyproject.toml"
 echo 'REGISTER = "acme"' > "$T/acme/src/acme_register/__init__.py"
-"$ROOT/runner/.venv/bin/pip" wheel --quiet --disable-pip-version-check --no-deps --wheel-dir "$T/build/extra" "$T/acme" \
+python3 -m venv "$T/venv" && "$T/venv/bin/pip" wheel --quiet --disable-pip-version-check --no-deps --wheel-dir "$T/build/extra" "$T/acme" \
   > "$T/wheel.log" 2>&1 || cat "$T/wheel.log"
 docker build --quiet --label arceus.keep=true -t "$TAG-extra" -f "$ROOT/console/Dockerfile" "$T/build" > "$T/build.log" 2>&1
 check "with a wheel in extra/, the image builds" "[ $? = 0 ]" || cat "$T/build.log"

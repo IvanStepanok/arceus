@@ -39,6 +39,8 @@ step "setup: the console sees the data folder without its secrets; nginx trusts 
   bash setup/tests/test-console.sh
 step "setup: the install's own packages go into the runner, leave it with the list, and change nothing unset" \
   bash setup/tests/test-extra-packages.sh
+step "setup: a package in a folder is built from a clean copy with real setuptools: a removed module is gone" \
+  bash setup/tests/test-extra-build.sh
 if [ -n "$live" ]; then  # the base image and PyPI: the network, so not in --offline
   step "console: the image builds from console/Dockerfile, with the install's own packages, and runs without root, sudo or secrets" \
     bash setup/tests/test-console-image.sh
