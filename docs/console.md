@@ -253,9 +253,7 @@ links into the code at the commit read, and whether each went to the register. T
 false or the runner's mode starts nothing.
 
 It is for reading only. A run is started with `arceus-runner secops run` or by `secops.schedule` and stopped with
-`secops stop`, on the server, and the team's notes on its stack are edited there too. Not here yet: starting and
-stopping a run, editing the notes, a role for triage, its latest run among Home's latest reviews, search, filters,
-comparing two runs and a verdict's history.
+`secops stop`, on the server, and the team's notes on its stack are edited there too.
 
 ## Settings
 
