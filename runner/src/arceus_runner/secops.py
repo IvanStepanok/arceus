@@ -47,6 +47,7 @@ from arceus_runner.workspace_run import (
     encodable,
     link_code,
     read_instructions,
+    report_address,
     write_atomic,
 )
 
@@ -578,6 +579,12 @@ def _advisory(a: dict) -> str:
 
 def render_run(view: dict, project: str, tz: ZoneInfo) -> str:
     """One run's report as a page of its own (report.html in the run's folder)."""
+    return _page(*run_body(view, project, tz))
+
+
+def run_body(view: dict, project: str, tz: ZoneInfo) -> tuple[str, str]:
+    """One run's report, its title and body: the result and the facts, the agent's summary, what kept it from a clean
+    result, then each advisory with its verdicts by repository. The web console shows the body inside its own page."""
     advisories = view.get("advisories") or []
     outcome = view.get("outcome")
     attention = sum(v["verdict"] in ATTENTION for a in advisories for v in a["verdicts"])
@@ -622,18 +629,20 @@ def render_run(view: dict, project: str, tz: ZoneInfo) -> str:
     if repos:
         body.append("<footer><p>Code at the commits read:</p><ul>" + "".join(repos) + "</ul></footer>")
 
-    return _page(f"Run {view['n']}: {head_of(outcome, attention)}", "\n".join(body))
+    return f"Run {view['n']}: {head_of(outcome, attention)}", "\n".join(body)
 
 
 def index_rows(store: ReviewStore, reports: Path) -> list[dict]:
-    """Every run as the list shows it: queued and under way ones too."""
+    """Every run as the list shows it, here and in the console: queued and under way ones too. The keys are those of
+    the other kinds' rows; `findings` counts the verdicts that need attention, which head_of says."""
     rows = []
     for run in store.runs("secops"):
-        verdicts = json.loads(run.result or "{}").get("verdicts") or []
+        result = json.loads(run.result or "{}")
         rows.append({"n": run.n, "state": run.state, "outcome": run.outcome, "source": run.source,
-                     "started_at": run.started_at or run.created_at, "stop": bool(run.stop_requested),
-                     "attention": sum(v["verdict"] in ATTENTION for v in verdicts),
-                     "summary": json.loads(run.result or "{}").get("summary") or "",
+                     "requested_by": run.requested_by, "created_at": run.created_at, "started_at": run.started_at,
+                     "stop_requested": bool(run.stop_requested),
+                     "findings": sum(v["verdict"] in ATTENTION for v in result.get("verdicts") or []),
+                     "summary": result.get("summary") or "",
                      "has_report": run.state == "done" and (reports / str(run.n) / "report.html").is_file()})
     return rows
 
@@ -643,13 +652,14 @@ def render_index(rows: list[dict], project: str, tz: ZoneInfo) -> str:
     title = f"Advisory triage of {project}"
     trs = []
     for r in sorted(rows, key=lambda r: r["n"], reverse=True):
-        result = head_of(r["outcome"], r["attention"]) if r["state"] == "done" else (
+        result = head_of(r["outcome"], r["findings"]) if r["state"] == "done" else (
             "Queued" if r["state"] == "pending" else "Sending the verdicts" if r["state"] == "publishing"
-            else "Triaging now") + (", stop asked" if r["stop"] and r["state"] != "done" else "")
+            else "Triaging now") + (", stop asked" if r["stop_requested"] and r["state"] != "done" else "")
         run = f'<a href="{e(r["n"])}/">Run {e(r["n"])}</a>' if r["has_report"] else f"Run {e(r['n'])}"
         summary = f'<span class="run-summary">{rich(r["summary"])}</span>' if r["summary"] else ""
         trs.append(f'<tr><td class="nowrap">{run}</td><td><span class="{OUTCOME_CLASS.get(r["outcome"] or "", "")}">'
-                   f'{e(result)}</span>{summary}</td><td class="hide-narrow nowrap">{e(_when(r["started_at"], tz))}'
+                   f'{e(result)}</span>{summary}</td><td class="hide-narrow nowrap">'
+                   f'{e(_when(r["started_at"] or r["created_at"], tz))}'
                    f'</td><td class="hide-narrow">{"Schedule" if r["source"] == "schedule" else "Command"}</td></tr>')
     body = ('<table><thead><tr><th>Run</th><th>Result</th><th class="hide-narrow">Started</th>'
             f'<th class="hide-narrow">How</th></tr></thead><tbody>{"".join(trs)}</tbody></table>' if trs else
@@ -688,10 +698,11 @@ def check(cfg) -> list[Check]:
         return [Check("config.secops", "fail", f"on ({when}), but {why}: a run would only report that")]
 
     told = f"notes {a.instructions}" if text else "no notes written"
+    url, tunnel = report_address(cfg, "secops", a.port)
 
     return [Check("config.secops", "ok", f"on ({when}); {told}; register {a.register_section.type}; verdicts "
                   f"{'sent to the register' if a.post else 'kept in the reports (post: false)'}; reports on "
-                  f"http://{a.address}:{a.port}/")]
+                  f"{url}{' (through the SSH tunnel)' if tunnel else ''}")]
 
 
 def check_register(cfg, register: AdvisoryRegister, scope: str) -> list[Check]:

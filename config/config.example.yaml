@@ -191,7 +191,7 @@ architect:
 
 # Optional. The agent reads the code against the open advisories of your advisory register and gives a verdict per
 # advisory and repository (docs/secops.md). `arceus-runner secops run` or `schedule`; changes nothing.
-# Reports: http://localhost:3302/ over an SSH tunnel, also with the console on (it has no section for them yet).
+# Reports: the console, or http://localhost:3302/ over an SSH tunnel (ssh -L 3302:127.0.0.1:3302 …).
 secops:
   enabled: false
   # register:                     # required when enabled: where the advisories are (docs/secops.md)

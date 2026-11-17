@@ -2,7 +2,7 @@
 {% block body %}
 <p class="crumb"><a href="{{ r.base }}">{{ r.list }}</a> / Run {{ r.n }}</p>
 <h1>{{ r.title }}</h1>
-<p class="meta">{% if r.scenario %}Scenario <strong>{{ r.scenario }}</strong>. {% endif %}{% if r.kind == "qa" %}The agent tests the whole platform in a browser by the test instructions.{% else %}The agent reviews the architecture; Codex checks each finding before the report goes out.{% endif %}</p>
+<p class="meta">{% if r.scenario %}Scenario <strong>{{ r.scenario }}</strong>. {% endif %}{% if r.kind == "qa" %}The agent tests the whole platform in a browser by the test instructions.{% elif r.kind == "secops" %}The agent reads the code against the open advisories and gives a verdict per advisory and repository; the runner sends them to the register when <code class="lit">secops.post</code> says so.{% else %}The agent reviews the architecture; Codex checks each finding before the report goes out.{% endif %}</p>
 <p class="notice err stale" role="alert" data-lost hidden><strong>Not updating.</strong> The console has not answered since <span data-lost-at></span>, so what is shown here may be out of date. It keeps trying.</p>
 <p class="sr" aria-live="polite" data-announce></p>
 <div data-refresh="{{ r.base }}{{ r.n }}/live" data-every="15">

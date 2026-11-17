@@ -655,7 +655,7 @@ class SecOpsConfig(Strict):
     """The agent reads the code against the open advisories of the company's advisory register (secops.py):
     `arceus-runner secops run`, or `schedule`, queues a triage run; the agent gives a verdict per advisory and
     repository, the runner sends them to the register when `post` says so, and each run gets a report under
-    `reports`, served on `address:port` also while the console is on (it has no section for these yet)."""
+    `reports`, served on `address:port` while the console is off (with it on, its section shows them)."""
     enabled: bool = False
     # `register:` in config.yaml (`register` is a name pydantic keeps): `type` and the provider's keys
     register_section: AdvisoryRegisterConfig | None = Field(default=None, alias="register")
@@ -765,9 +765,10 @@ PRIVATE_NETWORKS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.1/
 
 class ConsoleConfig(Strict):
     """The web console (console/ beside the runner, setup.sh's `console` phase): one address with a sign-in for the
-    status, the test runs, the architecture reviews, Grafana, the settings and the operations. nginx listens on
-    `port` on every address of the machine; whatever is in front of it (a load balancer that ends TLS) forwards
-    `public_url` there. While it is on, the runner does not serve the old report pages on qa.port and architect.port."""
+    status, the test runs, the architecture reviews, advisory triage, Grafana, the settings and the operations. nginx
+    listens on `port` on every address of the machine; whatever is in front of it (a load balancer that ends TLS)
+    forwards `public_url` there. While it is on, the runner does not serve the old report pages on qa.port,
+    architect.port and secops.port."""
     enabled: bool = False
     public_url: str | None = Field(default=None, pattern=r"^https?://[^/\s?#]+$")  # https://console.example.com
     port: int = Field(default=80, ge=1, le=65535)

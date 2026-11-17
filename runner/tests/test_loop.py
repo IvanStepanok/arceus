@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from arceus_runner import loop
-from arceus_runner.config import SlackConfig, SlackNotify
+from arceus_runner.config import ConsoleConfig, SecOpsConfig, SlackConfig, SlackNotify
 from arceus_runner.db import AlreadyRunning, InstanceLock, ReviewStore as Store
 from arceus_runner.events import EventLog
 from arceus_runner.http import AUTH_RETRY_SECONDS
@@ -214,6 +214,25 @@ def test_run_once_releases_everything(cfg, secrets, monkeypatch):
     lock.release()
     names = [e["event"] for e in read_events(cfg.paths.events)]
     assert names[0] == "runner_started" and names[-1] == "runner_stopped"
+
+
+def test_with_triage_on_the_register_is_built_and_its_page_served_only_while_the_console_is_off(cfg, secrets,
+                                                                                                 monkeypatch, tmp_path):
+    fake_yt, fake_gl = FakeYouTrack(), FakeGitLab()
+    real_yt, real_gl, real_register = loop.build_tracker, loop.build_code_host, loop.build_register
+    monkeypatch.setattr(loop, "build_tracker", lambda c, s: real_yt(c, s, transport=httpx.MockTransport(fake_yt)))
+    monkeypatch.setattr(loop, "build_code_host", lambda c, s: real_gl(c, s, transport=httpx.MockTransport(fake_gl)))
+    built: list[bool] = []
+    monkeypatch.setattr(loop, "build_register", lambda c, s: built.append(c.console.enabled) or real_register(c, s))
+    triage = SecOpsConfig.model_validate({"enabled": True, "port": 0, "reports": str(tmp_path / "secops"),
+                                          "register": {"type": "files", "advisories": str(tmp_path / "osv")}})
+    for console in (False, True):
+        on = cfg.model_copy(update={"secops": triage, "console": ConsoleConfig(
+            enabled=console, public_url="https://console.example.com")})
+        assert loop.run(on, secrets, once=True) == 0
+    assert built == [False, True]  # verdicts are sent whether the console is on or not
+    served = [e for e in read_events(cfg.paths.events) if e["event"] == "secops_reports_served"]
+    assert len(served) == 1  # only the run with the console off: with it on, its section shows the reports
 
 
 def test_failed_start_releases_the_lock(cfg, secrets, monkeypatch):

@@ -1,6 +1,7 @@
-"""The background agents' runs from the console: a test run of the platform (qa) or an architecture review (arch).
-Queuing and stopping one is what `arceus-runner qa|arch run|stop` does on the server, with the person's email as
-who asked; the runner does the rest on its next pass. Their instructions are edited with files.py."""
+"""The background agents' runs from the console: a test run of the platform (qa), an architecture review (arch) or
+a triage run of the advisories (secops). Queuing and stopping one is what `arceus-runner qa|arch run|stop` does on the
+server, with the person's email as who asked; the runner does the rest on its next pass. Their instructions are edited
+with files.py. A triage run is only read here: it is started and stopped on the server."""
 
 from __future__ import annotations
 
@@ -10,28 +11,34 @@ from pathlib import Path
 
 from starlette.responses import HTMLResponse, Response
 
+from arceus_runner import secops
 from arceus_runner.config import Config
+from arceus_runner.console import auth, files, status
 from arceus_runner.console import execution as ex
-from arceus_runner.console import files, status
 from arceus_runner.console.store import ConsoleError, User, parse_iso
-from arceus_runner.console.web import Ctx, Denied, as_number
+from arceus_runner.console.web import Ctx, Denied, Gone, Markup, as_number
 from arceus_runner.db import RUN_HOLDS, RUN_UNDER_WAY, AgentRun, ReviewStore
 from arceus_runner.qa import scenario_name
-from arceus_runner.workspace_run import MAX_INSTRUCTIONS, read_instructions
+from arceus_runner.workspace_run import CONSOLE_PATHS, MAX_INSTRUCTIONS, read_instructions
 
-KINDS = {"qa": ("qa", "test run", "Test runs"), "arch": ("architect", "architecture review", "Architecture reviews")}
+KINDS = {"qa": ("qa", "test run", "Test runs"), "arch": ("architect", "architecture review", "Architecture reviews"),
+         "secops": ("secops", "triage run", "Advisory triage")}
 
 
 STATE_TEXT = {"pending": "Queued", "preparing": "Starting", "running": "Running", "reviewing": "Second check",
               "restoring": "Putting the workspace back", "publishing": "Writing the report"}
+# A kind whose run does something else in a state: a triage run sends its verdicts to the register before its report
+# is written, and may wait an hour for it (secops._published).
+OWN_STATE_TEXT = {("secops", "publishing"): "Sending the verdicts"}
+# The result's colour, as each kind's report has it (a triage run's: secops.OUTCOME_CLASS).
 RESULT_CLASS = {"passed": "passed", "clean": "passed", "found": "found", "partial": "partial", "blocked": "blocked",
-                "unfinished": "unfinished", "stopped": "stopped", "unchanged": "stopped"}
+                "unfinished": "unfinished", "stopped": "stopped", "unchanged": "stopped", **secops.OUTCOME_CLASS}
 
 
-def dress(rows: list[dict], head_of) -> list[dict]:
+def dress(rows: list[dict], head_of, kind: str = "") -> list[dict]:
     """The list's rows with their words: under way, the step; done, the result as the reports word it."""
     for r in rows:
-        r["state_text"] = STATE_TEXT.get(r["state"], r["state"])
+        r["state_text"] = OWN_STATE_TEXT.get((kind, r["state"])) or STATE_TEXT.get(r["state"], r["state"])
         # Only the kinds whose rows say so tell head_of the report was disputed (qa.index_rows).
         extra = {"disputed": True} if r.get("disputed") else {}
         r["result_text"] = head_of(r.get("outcome"), r.get("findings") or 0, **extra) if r["state"] == "done" else ""
@@ -226,6 +233,9 @@ def run_view(cfg: Config, kind: str, n: int, now: float | None = None) -> dict |
                          can_take=m.can_take,
                          drain_by=ex.drain_by(store), reason=run.reason or "", stop_asked=bool(run.stop_requested))
         why = ex.reason(facts)
+        own = OWN_STATE_TEXT.get((kind, run.state))
+        if own:
+            why["title"] = own
         if run.state == "done":
             # Finished, and this page is shown because its report is not there: said as such, never as a result.
             why = {"code": "no_report", "tone": "bad", "title": "Finished, but its report is missing",
@@ -235,18 +245,19 @@ def run_view(cfg: Config, kind: str, n: int, now: float | None = None) -> dict |
         plan_view = plan(run) if kind == "qa" else None
         scenario = scenario_name(store, run) if kind == "qa" else ""
         return {"kind": kind, "n": n, "id": run.id, "title": f"{noun}, run {n}", "state": run.state,
-                "words": stage(run, view), "why": why, "runner": runner, "live": view,
+                "words": own or stage(run, view), "why": why, "runner": runner, "live": view,
                 "clock": clock(run, now), "plan": plan_view, "scenario": scenario,
                 "fresh": ex.freshness(runner, running, view, now), "stop_asked": bool(run.stop_requested),
                 "requested_by": run.requested_by, "source": run.source, "created_at": run.created_at,
                 "started_at": run.started_at or "", "finished_at": run.finished_at or "", "updated_at": run.updated_at,
-                "base": "/qa/" if kind == "qa" else "/architecture/", "list": KINDS[kind][2], "now": now}
+                "base": CONSOLE_PATHS[kind], "list": KINDS[kind][2], "now": now}
     finally:
         store.close()
 
 
 def _can_stop(ctx: Ctx, view: dict) -> bool:
-    return ctx.can(f"{view['kind']}.run") and view["state"] in RUN_UNDER_WAY and not view["stop_asked"]
+    action = f"{view['kind']}.run"  # none for a triage run: it is stopped on the server
+    return action in auth.ACTIONS and ctx.can(action) and view["state"] in RUN_UNDER_WAY and not view["stop_asked"]
 
 
 def status_page(ctx: Ctx, view: dict) -> Response:
@@ -261,3 +272,47 @@ def status_live(ctx: Ctx, view: dict) -> Response:
                                                                  duration=ex.duration, csrf=ctx.csrf,
                                                                  can_stop=_can_stop(ctx, view))
     return HTMLResponse(html)
+
+
+# -- a report written as result.json (a test run's, a triage run's) -------------------------------------------------
+
+def report_file(cfg: Config, kind: str, n: int) -> Path | None:
+    """The run's result.json, or None while it has none (queued, under way, or finished without one)."""
+    result = section(cfg, kind).reports / str(n) / "result.json"
+    if result.is_symlink():
+        raise Gone()
+    return result if result.is_file() else None
+
+
+def report_page(ctx: Ctx, cfg: Config, kind: str, n: int, run_body) -> Response:
+    """The run's report once it is written, rendered from its result.json, the same view report.html was written from
+    (`run_body`: the kind's title and body); until then, and for a finished run without one, where the run is."""
+    try:
+        result = report_file(cfg, kind, n)
+    except OSError:
+        result = None
+    if result is None:
+        view = run_view(cfg, kind, n)
+        if view is None:
+            raise Gone()
+        return status_page(ctx, view)
+    try:
+        view = json.loads(result.read_text(encoding="utf-8"))
+    except (FileNotFoundError, NotADirectoryError):
+        raise Gone() from None
+    except (OSError, ValueError):
+        return ctx.render("message.html", status=500, title=f"Run {n}",
+                          message=f"The run's report cannot be read ({result}).")
+    title, body = run_body(view, cfg.project, cfg.schedule.tz)
+    return ctx.render("report.html", title=title, body=Markup(body))
+
+
+def report_live(ctx: Ctx, cfg: Config, kind: str, n: int) -> Response:
+    view = run_view(cfg, kind, n)
+    if view is None:
+        raise Gone()
+    try:
+        view["report_ready"] = report_file(cfg, kind, n) is not None
+    except OSError:
+        pass
+    return status_live(ctx, view)

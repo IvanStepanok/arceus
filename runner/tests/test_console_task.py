@@ -42,6 +42,7 @@ def w(tmp_path: Path, monkeypatch):
     raw["mode"] = "live"
     raw["qa"] = {"enabled": True, "reports": str(tmp_path / "qa"), "instructions": str(tmp_path / "qa.md")}
     raw["architect"] = {"enabled": True}
+    raw["secops"] = {"reports": str(tmp_path / "secops")}
     config = tmp_path / "config.yaml"
     config.write_text(yaml.safe_dump(raw))
     settings = Settings(config_path=config, db_path=tmp_path / "console" / "console.db")
@@ -563,18 +564,18 @@ def test_every_task_and_run_link_on_home_and_the_lists_opens(w):
     task(w.store, "ACME-3", "code_review")
     task(w.store, "ACME-4", "failed", reason="boom")
     w.store.record_trigger("ACME-20", "tag-1", "ivan", True, 1)
-    for kind in ("qa", "arch", "secops", "secops"):  # advisory triage has no section: named on home, never linked
+    for kind in ("qa", "arch", "secops", "secops"):
         run = w.store.add_run(kind, "command", "x@example.com", scenario=1 if kind == "qa" else 0)
         w.store.update_run(run.id, state="running")
     c = signed_in(w.settings, "owner@example.com")
-    assert "Advisory triage, run 2" in c.get("/").text
-    pages = ["/", "/tasks/", "/qa/", "/architecture/"]
+    assert '<a href="/secops/2/">Advisory triage, run 2</a>' in c.get("/").text  # Home links a triage run too
+    pages = ["/", "/tasks/", "/qa/", "/architecture/", "/secops/"]
     links = set()
     for p in pages:
         html = c.get(p).text
-        links |= set(re.findall(r'href="(/(?:tasks|qa|architecture)/[^"/]+/)"', html))
+        links |= set(re.findall(r'href="(/(?:tasks|qa|architecture|secops)/[^"/]+/)"', html))
     expected = {"/tasks/ACME-12/", "/tasks/ACME-7/", "/tasks/ACME-2/", "/tasks/ACME-3/", "/tasks/ACME-4/",
-                "/tasks/ACME-20/", "/qa/1/", "/architecture/1/"}
+                "/tasks/ACME-20/", "/qa/1/", "/architecture/1/", "/secops/2/"}
     assert expected <= links, expected - links
     for link in sorted(links):
         if link.endswith(("instructions/", "findings/")):

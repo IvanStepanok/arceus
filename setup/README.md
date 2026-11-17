@@ -117,6 +117,7 @@ With the web console on, Grafana is its **Monitoring** (`/grafana/`), behind its
 ssh -L 3000:127.0.0.1:3000 <user>@<vm>        # then http://localhost:3000
 ssh -L 3000:127.0.0.1:3000 -L 3300:127.0.0.1:3300 <user>@<vm>   # with the test runs' reports (qa) too
 ssh -L 3000:127.0.0.1:3000 -L 3301:127.0.0.1:3301 <user>@<vm>   # with the architecture reviews (architect) too
+ssh -L 3000:127.0.0.1:3000 -L 3302:127.0.0.1:3302 <user>@<vm>   # with the triage runs' reports (secops) too
 ```
 
 Viewing needs no login. The admin password is in `~/arceus/data/grafana-admin-password`. There are three dashboards in the **Arceus** folder:

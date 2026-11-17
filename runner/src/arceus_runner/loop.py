@@ -497,10 +497,10 @@ def run(cfg: Config, secrets: Secrets, once: bool = False, config_sha: str | Non
             events.emit("arch_reports_served", address=a.address, port=port, folder=str(a.reports))
         register = None
         if cfg.secops.enabled:
-            # The advisory register (secops.register), with its secret if it names one: the runner's calls only. The
-            # console has no section for these reports yet, so they are served here whether it is on or not.
+            # The advisory register (secops.register), with its secret if it names one: the runner's calls only.
             register = build_register(cfg, secrets)
             stack.callback(register.close)
+        if cfg.secops.enabled and not cfg.console.enabled:
             a = cfg.secops
             port, stop_reports = qa_report.serve(a.reports, a.address, a.port,
                                                  index=lambda: secops_mod.index_page(cfg))

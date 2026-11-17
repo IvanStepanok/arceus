@@ -100,12 +100,12 @@ invitation; exits 0 only if all of it holds):
 
 ```bash
 bash setup/checks/console-live.sh https://console.example.com user@vm -p 22 --owner you@example.com --since 2026-11-08T23:20
-``` While the console is
-on, the runner no longer serves the old report pages on `qa.port` and `architect.port`: the Slack notice of a
-finished test run or architecture review links the report's page in the console instead (`public_url` + `/qa/<n>/`
-or `/architecture/<n>/`), and so do `arceus-runner qa` and `architect`. Signed out, the link opens the sign-in and
-then that report. Advisory triage ([secops.md](secops.md)) has no section here yet: its reports stay on the
-runner's own page, `secops.port`, through the SSH tunnel, and every link to them says so.
+```
+
+While the console is on, the runner no longer serves the old report pages on `qa.port`, `architect.port` and
+`secops.port`: the Slack notice of a finished test run, architecture review or triage run links the report's page in
+the console instead (`public_url` + `/qa/<n>/`, `/architecture/<n>/` or `/secops/<n>/`), and so do `arceus-runner
+qa`, `architect` and `secops`. Signed out, the link opens the sign-in and then that report.
 
 ## Home
 
@@ -115,8 +115,8 @@ does not answer. Under it: whether the runner answers and when it last finished 
 waiting on people, those in code review, what runs now, the latest test run and architecture review, the health
 checks that fail with their reason, and Claude's and Codex's subscription usage. A ticket waiting on a question
 shows the question's first line. Every ticket's key, in any of these lists, opens its page under **Tasks**, with a
-separate link to the ticket itself; every run opens its page under **Test runs** or **Architecture**. The part
-refreshes itself every 15 seconds.
+separate link to the ticket itself; every run opens its page under **Test runs**, **Architecture** or **Advisory
+triage**. The part refreshes itself every 15 seconds.
 
 It comes from `runner.db` (read-only) and the runner's metrics. The runner writes its health checks with their
 detail into `runner.db` (`runner_state`) whenever one changes, so a failure that began a week ago still shows
@@ -241,6 +241,19 @@ The form carries the version of the finding the page showed. If someone else dec
 decision is refused and the page says what stands now. The next review gets the reason only after the security
 screen cleared it, quoted as data ([architect.md](architect.md)). Architects also start and stop a review and edit
 the review instructions, the same way as test runs.
+
+## Advisory triage
+
+**Advisory triage** lists every triage run ([secops.md](secops.md)), newest first: a finished one with its result in
+its report's words and the agent's summary, one under way with its step (in `publishing` it is sending its verdicts to
+the register) and a stop if one was asked, when it started, and the schedule or who asked. A run queued or under way
+opens at `/secops/<n>/` as where it is, as a test run does; a finished one opens as its report, rendered from the
+run's `result.json` as the runner's own page is: each advisory with its verdicts by repository, their evidence and
+links into the code at the commit read, and whether each went to the register. The list says when `secops.enabled` is
+false or the runner's mode starts nothing.
+
+It is for reading only. A run is started with `arceus-runner secops run` or by `secops.schedule` and stopped with
+`secops stop`, on the server, and the team's notes on its stack are edited there too.
 
 ## Settings
 
