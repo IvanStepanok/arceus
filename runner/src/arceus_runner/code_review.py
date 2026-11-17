@@ -1033,6 +1033,9 @@ class ReviewAgent:
                 if v.get(what) == "failed":
                     items.append(f"The {what} failed when the reviewer ran them.")
             items += [f"Note: {r}." for r in mr["reasons"]]
+            if v.get("verdict") == "unsure" and v.get("unsure_because"):
+                items.append(f"Left open for people, not for you to decide in code: {v['unsure_because']} Keep the "
+                             "change to what the ticket asks and say in your result what stays open.")
             parts.append(f"{mr['repo']} ({mr['url']}), reviewed at `{mr['sha'][:12]}`:\n"
                          + "\n".join(f"  - {i}" for i in items or ["see the review note on the MR"]))
         return (f"The code review {row.id} found these; the whole review is the note on the MR.\n"
@@ -1139,17 +1142,22 @@ class ReviewAgent:
             elif v is None:
                 kind = "unverified"
                 reasons.append("the reviewer left no verdict for it")
-            elif v["verdict"] == "changes" or v["requirements_met"] is False or build == "failed" \
-                    or tests == "failed" or any(f["severity"] == "blocker" for f in v["findings"]):
+            elif v["verdict"] == "changes" or build == "failed" or tests == "failed" \
+                    or any(f["severity"] == "blocker" for f in v["findings"]) \
+                    or (v["requirements_met"] is False and v["verdict"] != "unsure"):
                 kind = "changes"
                 reasons += v.get("doubts", [])
             elif v["verdict"] == "unsure" or v["requirements_met"] is None or not build_ok or not tests_ok:
+                # "Unsure" with nothing that must change is a question for people (an open product decision, a fact
+                # outside the repository): the agent cannot answer it, so it is never sent back as a fix.
                 kind = "unverified"
                 if v["verdict"] == "unsure":
                     reasons.append(v["unsure_because"] or "the reviewer could not tell whether it is right, and did "
                                                            "not say why")
                 if v["requirements_met"] is None:
                     reasons.append("the reviewer did not say whether it meets the ticket")
+                elif v["requirements_met"] is False:
+                    reasons.append("until that is answered, the reviewer cannot say it meets the ticket")
                 if not build_ok:
                     reasons.append(self._not_run("build", checks.ci_build_jobs))
                 if not tests_ok:
@@ -1526,6 +1534,8 @@ class ReviewAgent:
                 lines.append("- It does not do what the ticket asks.")
             if v and "failed" in (v["build"], v["tests"]):
                 lines.append(f"- The {'build' if v['build'] == 'failed' else 'tests'} failed.")
+            if v and v["verdict"] == "unsure" and v["unsure_because"]:
+                lines += ["", f"Left open for a person to decide: {v['unsure_because']}"]
             lines += ["", "Not approved. " + self._sent_back_words(row, task)]
         else:
             lines += ["Why:", *(f"- {r}" for r in mr["reasons"] or ["the review did not finish"]), "",
@@ -1686,7 +1696,9 @@ class ReviewAgent:
                   SCHEMA_EXAMPLE, "```", "",
                   "- `verdict`: \"ready\" (meets the ticket, no blocker, and the build and tests you could run "
                   "passed or fail only as they did before), \"changes\" (at least one "
-                  "blocker), or \"unsure\" (reading the code, you could not tell whether it is right).",
+                  "blocker), or \"unsure\" (reading the code, you could not tell whether it is right). A question "
+                  "only people can answer, such as a product decision the ticket leaves open, makes it \"unsure\", "
+                  "not a blocker: the runner then asks people instead of sending it to the agent.",
                   "- `unsure_because`: with \"unsure\", what you could not tell and why, in a sentence a person can "
                   "check (\"whether the retry is safe: it depends on the payment provider's idempotency, which is "
                   "not in the repository\"); it is the reason the note gives.",

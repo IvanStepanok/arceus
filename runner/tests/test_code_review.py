@@ -661,6 +661,44 @@ def test_an_unsure_reviewer_gives_its_own_reason(w):
     assert "the reviewer could not tell whether it is right, and did not say why" in review_notes(w)[-1]
 
 
+def test_a_question_for_the_product_owner_goes_to_people_not_to_the_agent(w):
+    """Unsure, requirements not met only because the ticket leaves a product decision open, no blocker: the agent
+    cannot answer that, so it must not guess in code. Nothing is sent back; the note asks people."""
+    publish(w)
+    ask(w)
+    write_verdict(w, verdict="unsure", requirements_met=False,
+                  unsure_because="whether AC4's 'content' includes Asset Library assets: the PO has to say",
+                  findings=[{"severity": "suggestion", "text": "Show a spinner while the lock is checked"}])
+    finish(w)
+    [note] = review_notes(w)
+    assert "could not be confirmed" in note and "changes are needed" not in note
+    assert "- whether AC4's 'content' includes Asset Library assets: the PO has to say" in note
+    assert "- until that is answered, the reviewer cannot say it meets the ticket" in note
+    assert "Sent to the agent" not in note and "Write `/review` on the ticket to review it again." in note
+    assert approve_calls(w) == [] and w.store.review(RID).outcome == "unverified"
+    later(w)
+    assert sends(w) == [] and w.store.task("ACME-1").state == "code_review"
+    assert w.events_named("review_sent_back") == []
+
+
+def test_a_blocker_still_goes_back_with_the_open_question_marked_as_one_for_people(w):
+    publish(w)
+    ask(w)
+    write_verdict(w, verdict="unsure", requirements_met=False,
+                  unsure_because="whether active users are frozen too: the PO has to say",
+                  findings=[{"severity": "blocker", "file": "app/roles.py", "line": 7, "text": "Teacher is not replaced"}])
+    finish(w)
+    [note] = review_notes(w)
+    assert "changes are needed" in note and "Sent to the agent to fix (round 1 of 3)" in note
+    assert "Left open for a person to decide: whether active users are frozen too: the PO has to say" in note
+    later(w)
+    [send] = sends(w)
+    text = send["argv"][-1]
+    assert "`app/roles.py:7`: Teacher is not replaced" in text
+    assert "Left open for people, not for you to decide in code: whether active users are frozen too" in text
+    assert "It does not do what the ticket asks." not in text
+
+
 def test_a_push_during_the_review_makes_its_approval_stale(w):
     publish(w)
     ask(w)

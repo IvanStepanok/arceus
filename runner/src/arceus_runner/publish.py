@@ -120,8 +120,8 @@ class Publisher:
         follow_up = task.review_rounds or task.ci_attempts
         self.store.update_task(task.task_id, mr_urls=self._mr_urls(task))
         shas = "-".join(r["reviewed_sha"][:10] for _, r in plan)
-        head = ("Arceus addressed the review comments; the updated changes passed review. Same MR, updated branch:"
-                if follow_up else "Arceus finished the work; the changes passed review. Merge request:")
+        head = ("Arceus addressed the review comments; its own review passed the updated changes. Same MR, updated "
+                "branch:" if follow_up else "Arceus finished the work; its own review passed the changes. Merge request:")
         body = head + "\n" + "\n".join(f"- {u}" for u in urls)
         if dropped:
             body += "\n\nNo longer part of this task (its changes were taken back out, the MR is closed):\n" + \
