@@ -810,6 +810,66 @@ MIGRATIONS.append(
 )
 
 
+MIGRATIONS.append(
+    # 26: advisory triage (secops.py), runs of kind `secops`, which have no scenario (0, as an architecture review);
+    # SQLite cannot change a CHECK, so agent_runs is rebuilt as 25 left it, every column and row as they were, with
+    # only its checks admitting `secops`. `advisory_verdicts` is what each run decided to send to the advisory
+    # register, one row per advisory and repository: `sending` is written before the request and settled after it
+    # (`sent`, or `refused` with the register's words), `known` is a verdict the register had already from an earlier
+    # run. `changed` is the advisory's marker when the run read it: the same verdict is sent again only once it moved.
+    # `advisory` is the register's id, opaque (integrations.Id): no declared type, as in 13, so "0042" comes back as
+    # written.
+    """
+    CREATE TABLE agent_runs_v26 (
+        id               TEXT PRIMARY KEY,
+        kind             TEXT NOT NULL CHECK (kind IN ('qa', 'arch', 'secops')),
+        n                INTEGER NOT NULL,
+        scenario         INTEGER NOT NULL DEFAULT 0,
+        source           TEXT NOT NULL CHECK (source IN ('command', 'schedule')),
+        requested_by     TEXT NOT NULL,
+        slot             TEXT,
+        state            TEXT NOT NULL CHECK (state IN ('pending', 'preparing', 'running', 'reviewing', 'restoring',
+                                                        'publishing', 'done')),
+        stop_requested   INTEGER NOT NULL DEFAULT 0 CHECK (stop_requested IN (0, 1)),
+        snapshot         TEXT NOT NULL DEFAULT '{}',
+        result           TEXT,
+        outcome          TEXT,
+        reason           TEXT,
+        started_at       TEXT,
+        finished_at      TEXT,
+        created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        deadline         TEXT,
+        test_until       TEXT,
+        progress         TEXT,
+        CHECK ((kind = 'qa' AND scenario > 0) OR (kind IN ('arch', 'secops') AND scenario = 0)),
+        UNIQUE (kind, n),
+        UNIQUE (kind, scenario, slot)
+    );
+    INSERT INTO agent_runs_v26 (id, kind, n, scenario, source, requested_by, slot, state, stop_requested, snapshot,
+                                result, outcome, reason, started_at, finished_at, created_at, updated_at, deadline,
+                                test_until, progress)
+        SELECT id, kind, n, scenario, source, requested_by, slot, state, stop_requested, snapshot, result, outcome,
+               reason, started_at, finished_at, created_at, updated_at, deadline, test_until, progress FROM agent_runs;
+    DROP TABLE agent_runs;
+    ALTER TABLE agent_runs_v26 RENAME TO agent_runs;
+    CREATE INDEX agent_runs_state ON agent_runs (kind, state);
+    CREATE TABLE advisory_verdicts (
+        run              INTEGER NOT NULL,
+        advisory         NOT NULL,
+        repo             TEXT NOT NULL,
+        verdict          TEXT NOT NULL,
+        evidence         TEXT NOT NULL,
+        changed          TEXT NOT NULL,
+        state            TEXT NOT NULL CHECK (state IN ('sending', 'sent', 'known', 'refused')),
+        answer           TEXT,
+        updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        PRIMARY KEY (run, advisory, repo)
+    );
+    """
+)
+
+
 TASK_FIELDS = ("task_id", "issue_db_id", "state", "summary", "tag_author", "repo", "repo_path", "branch",
                "base_branch", "question_id", "question_at_ms", "reason", "mr_urls", "attempt_started",
                "extra_repos", "review_rounds", "ci_attempts", "published_at_ms", "failed_at_ms",
@@ -1214,7 +1274,7 @@ RUN_HOLDS = ("preparing", "running", "reviewing", "restoring")
 RUN_UNDER_WAY = ("pending", *RUN_HOLDS, "publishing")
 RUN_FIELDS = ("state", "stop_requested", "snapshot", "result", "outcome", "reason", "started_at", "finished_at",
               "deadline", "test_until", "progress")
-RUN_KINDS = ("qa", "arch")
+RUN_KINDS = ("qa", "arch", "secops")
 SCENARIO_FIELDS = ("name", "days", "at", "scheduled")
 FINDING_FIELDS = ("title", "body", "last_run", "status", "fixed_run", "decision", "decision_note", "decided_at",
                   "decided_by")
@@ -1223,7 +1283,7 @@ FINDING_FIELDS = ("title", "body", "last_run", "status", "fixed_run", "decision"
 @dataclass(frozen=True)
 class AgentRun:
     id: str              # also the engine task's id: <kind>-<n>
-    kind: str            # qa | arch
+    kind: str            # qa | arch | secops
     n: int               # numbered per kind
     source: str          # command | schedule
     requested_by: str
@@ -1241,7 +1301,7 @@ class AgentRun:
     deadline: str | None = None    # when the run is stopped, fixed when it is prepared
     test_until: str | None = None  # a test run's: when its agent stops testing and writes the report
     progress: str | None = None    # JSON: a test run's plan as the runner last counted it (qa.plan_progress)
-    scenario: int = 0              # a test run's scenario (qa_scenarios), 0 for an architecture review
+    scenario: int = 0              # a test run's scenario (qa_scenarios), 0 for the kinds without them
 
 
 @dataclass(frozen=True)
@@ -1455,6 +1515,32 @@ class ReviewStore(TaskStore):
         """The run (of this kind, or of any) that has the shared workspace now, if any."""
         found = self.runs(kind, *RUN_HOLDS)
         return found[0] if found else None
+
+    # -- what advisory triage sent to the register (secops.py) --
+
+    def advisory_verdicts(self, run: int) -> dict[tuple[int | str, str], sqlite3.Row]:
+        """Run n's verdicts as it decided to send them, by (advisory, repository)."""
+        rows = self.conn.execute("SELECT * FROM advisory_verdicts WHERE run = ?", (run,)).fetchall()
+        return {(r["advisory"], r["repo"]): r for r in rows}
+
+    def last_sent(self, before: int) -> dict[tuple[int | str, str], sqlite3.Row]:
+        """The latest verdict on each (advisory, repository) sent before run `before`, or that may have been: one
+        still `sending` counts, so a verdict whose answer was lost is never sent twice."""
+        rows = self.conn.execute(
+            "SELECT *, MAX(run) FROM advisory_verdicts WHERE state IN ('sent', 'sending') AND run < ? "
+            "GROUP BY advisory, repo", (before,)).fetchall()
+        return {(r["advisory"], r["repo"]): r for r in rows}
+
+    def keep_advisory_verdict(self, run: int, advisory: int | str, repo: str, verdict: str, evidence: str,
+                              changed: str, state: str) -> None:
+        self.conn.execute("INSERT INTO advisory_verdicts (run, advisory, repo, verdict, evidence, changed, state)"
+                          " VALUES (?, ?, ?, ?, ?, ?, ?)", (run, advisory, repo, verdict, evidence, changed, state))
+
+    def settle_advisory_verdict(self, run: int, advisory: int | str, repo: str, state: str,
+                                answer: str | None = None) -> None:
+        self.conn.execute("UPDATE advisory_verdicts SET state = ?, answer = ?, updated_at = "
+                          "strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE run = ? AND advisory = ? AND repo = ?",
+                          (state, answer, run, advisory, repo))
 
     # -- what the architecture reviews found (architect.py) --
 

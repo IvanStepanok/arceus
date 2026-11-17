@@ -31,6 +31,7 @@ from arceus_runner import arch_report
 from arceus_runner import architect as architect_mod
 from arceus_runner import qa as qa_mod
 from arceus_runner import qa_report
+from arceus_runner import secops as secops_mod
 from arceus_runner.checks import Check
 from arceus_runner.cleanup import ClaudeAdvisor, Cleanup, Situation, release_note
 from arceus_runner.code_review import ReviewAgent
@@ -51,7 +52,15 @@ from arceus_runner.notify import Notifier
 from arceus_runner.progress import ProgressWatcher
 from arceus_runner.screening import ClaudeClassifier, Classify, classifier_env
 from arceus_runner.http import AuthError, BadRequest, NotFound, ServiceClient, ServiceError, TransientError
-from arceus_runner.integrations import CodeHost, Issue, IssueTracker, build_code_host, build_tracker
+from arceus_runner.integrations import (
+    AdvisoryRegister,
+    CodeHost,
+    Issue,
+    IssueTracker,
+    build_code_host,
+    build_register,
+    build_tracker,
+)
 
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 DOCTOR_EVERY = 600
@@ -86,7 +95,7 @@ def require_mode_ready(cfg: Config, probe: bulava_mod.Probe) -> None:
     missing = probe.missing_for_live()
     if cfg.bulava.model_env():
         missing += probe.missing_for_models()
-    if cfg.qa.enabled:
+    if cfg.qa.enabled or cfg.secops.enabled:  # both bring their own review of the closing report
         missing += probe.missing_for_test_runs()
     if not probe.installed or probe.problems or missing:
         why = "; ".join([*probe.problems, *(f"no {m}" for m in missing)]) or "engine not installed"
@@ -116,6 +125,7 @@ class Runner:
         classify: Classify | None = None,
         cleanup: Cleanup | None = None,
         notifier: Notifier | None = None,
+        register: AdvisoryRegister | None = None,
     ):
         self.cfg = cfg
         self.notifier = notifier  # the project's Slack channel (notify.py), when config.yaml has a webhook
@@ -137,7 +147,8 @@ class Runner:
             self.delivery.reviewer = self.reviewer
             self.qa = QaAgent(self.delivery.agent_context())
             self.architect = ArchitectAgent(self.delivery.agent_context())
-            self.background = [self.qa, self.architect]
+            self.secops = secops_mod.SecOpsAgent(self.delivery.agent_context(), register)
+            self.background = [self.qa, self.architect, self.secops]
             # Who else holds the workspace, asked in this order: a code review, then the background runs.
             self.delivery.workspace.holders = [self.reviewer, *self.background]
         self.progress = ProgressWatcher(cfg.paths.bulava_state, cfg.paths.workspace, store, events, now,
@@ -484,6 +495,17 @@ def run(cfg: Config, secrets: Secrets, once: bool = False, config_sha: str | Non
                                                    architect_mod.decider(cfg, events))
             stack.callback(stop_reports)
             events.emit("arch_reports_served", address=a.address, port=port, folder=str(a.reports))
+        register = None
+        if cfg.secops.enabled:
+            # The advisory register (secops.register), with its secret if it names one: the runner's calls only. The
+            # console has no section for these reports yet, so they are served here whether it is on or not.
+            register = build_register(cfg, secrets)
+            stack.callback(register.close)
+            a = cfg.secops
+            port, stop_reports = qa_report.serve(a.reports, a.address, a.port,
+                                                 index=lambda: secops_mod.index_page(cfg))
+            stack.callback(stop_reports)
+            events.emit("secops_reports_served", address=a.address, port=port, folder=str(a.reports))
         cleanup = make_cleanup(cfg, store, events, engine) if cfg.cleanup.enabled else None
         if cleanup:
             cleanup.recover()
@@ -495,7 +517,7 @@ def run(cfg: Config, secrets: Secrets, once: bool = False, config_sha: str | Non
             notifier.sender.start()
             stack.callback(notifier.sender.close)
         runner = Runner(cfg, store, events, tracker, host, engine=engine, git=git, metrics=metrics,
-                        classify=classify, cleanup=cleanup, notifier=notifier)
+                        classify=classify, cleanup=cleanup, notifier=notifier, register=register)
         if engine:
             engine.held = runner.engine_held
 

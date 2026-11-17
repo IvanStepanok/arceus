@@ -1,20 +1,25 @@
-"""The two outside systems Arceus works with, as contracts: an issue tracker and a code host.
+"""The outside systems Arceus works with, as three contracts: an issue tracker, a code host and, for advisory
+triage, an advisory register.
 
-The runner's flow (loop, delivery, review, screening, cleanup) talks only to these two contracts.
-YouTrack (youtrack.py) and GitLab (gitlab.py) are the implementations that ship with Arceus; another
-tracker or host is one more module with the same shape, named in config.yaml:
+The runner's flow (loop, delivery, review, screening, cleanup, secops) talks only to these contracts.
+YouTrack (youtrack.py), GitLab (gitlab.py) and a folder of OSV files (advisory_files.py) are the
+implementations that ship with Arceus; another is one more module with the same shape, named in config.yaml:
 
     tracker:   { type: youtrack, ... }   # or a module of your own: { type: acme_arceus.jira, ... }
     code_host: { type: gitlab, ... }
+    secops:
+      register: { type: files, ... }     # or { type: acme_arceus.register, ... }
 
 A provider module defines three things:
 
-- its config section: a subclass of config.IssueTrackerConfig or config.CodeHostConfig with the
-  provider's own keys next to the shared ones (strict: an unknown key is an error at start);
-- the adapter: a class with the methods of IssueTracker or CodeHost below;
-- `TRACKER = TrackerType(config=..., build=...)` or `CODE_HOST = CodeHostType(...)`, which this
-  module looks up by `type:`. A built-in name is one line in BUILTIN_TRACKERS / BUILTIN_CODE_HOSTS;
-  any other `type:` is imported as a Python module path.
+- its config section: a subclass of config.IssueTrackerConfig, config.CodeHostConfig or
+  config.AdvisoryRegisterConfig with the provider's own keys next to the shared ones (strict: an
+  unknown key is an error at start);
+- the adapter: a class with the methods of IssueTracker, CodeHost or AdvisoryRegister below;
+- `TRACKER = TrackerType(config=..., build=...)`, `CODE_HOST = CodeHostType(...)` or
+  `REGISTER = RegisterType(...)`, which this module looks up by `type:`. A built-in name is one line
+  in BUILTIN_TRACKERS / BUILTIN_CODE_HOSTS / BUILTIN_REGISTERS; any other `type:` is imported as a
+  Python module path.
 
 What every adapter has to keep, because the flow relies on it:
 
@@ -42,7 +47,7 @@ from urllib.parse import quote
 
 if TYPE_CHECKING:
     from arceus_runner.checks import Check
-    from arceus_runner.config import CodeHostConfig, Config, IssueTrackerConfig, Secrets
+    from arceus_runner.config import AdvisoryRegisterConfig, CodeHostConfig, Config, IssueTrackerConfig, Secrets
     from arceus_runner.gitops import GitAuth
     from arceus_runner.http import ServiceClient
 
@@ -413,6 +418,66 @@ class CodeHost(Protocol):
         rights, the scope and its repositories."""
 
 
+# -- advisory register -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Advisory:
+    """One open security advisory as advisory triage (secops.py) works with it, whatever the register's own shape."""
+    id: Id                    # opaque, kept as given (41, "GHSA-…"): the agent and the register name it by this
+    ref: str                  # what people call it: "SEC-41", "GHSA-…"
+    title: str
+    text: str | None          # the advisory whole; None: the register could not give it, and the run leaves it out
+    facts: dict               # given to the agent as it is: what the register knows of its identifiers, severity,
+                              # affected and fixed versions; plain JSON
+    identifiers: list[str] = field(default_factory=list)  # the report shows them: CVE and other ids
+    severity: str = ""        # a word in lower case (critical, high, moderate, low); "" when none is given
+    exploited: bool = False   # known to be exploited
+    changed: str = ""         # moves when the advisory's content does: the same verdict is sent again only then
+    url: str | None = None    # its page for people
+    problem: str = ""         # with text None: why the register could not give it, which the report says
+
+
+@dataclass(frozen=True)
+class RepoAt:
+    """The repository a verdict is on, as the register is told it; the register names the project its own way."""
+    path: str     # under the code host's group: "acme-platform", "sub/repo"
+    group: str    # the code host's group (CodeHost.scope): "clients/acme"
+    url: str      # the repository's address on the code host, what git clones
+    commit: str   # the commit the agent read
+
+
+class AdvisoryRegister(Protocol):
+    """Where a company keeps its open security advisories, and where advisory triage's verdicts may go.
+
+    Errors are http.py's, as for the other contracts: a refusal is BadRequest or NotFound, its `body` the register's
+    own words; no answer is TransientError, tried again; any other ServiceError is the register failing. A register
+    that needs a secret names it in its section (`token_env`) and gets it from build(); the agent never sees it.
+    """
+
+    receives: bool       # takes verdicts at all; False: read-only, and a run with `secops.post` sends nothing
+    max_evidence: int    # the longest evidence it takes, in characters: the agent is told it, and longer is cut
+
+    def open(self) -> list[Advisory]:
+        """Every open advisory, each whole. Paging and separate reads of a text are the provider's own business."""
+
+    def send(self, advisory: Advisory, repo: RepoAt, verdict: str, evidence: str) -> None:
+        """Take one verdict (affected, fixed, not_affected, needs_review) on `advisory`, as open() gave it but
+        without its text (None), for `repo`. Only called when `receives`; the runner keeps what it sent and does not
+        send it twice."""
+
+    def latest(self, advisory: Id, repo: RepoAt) -> tuple[str, str] | None:
+        """The verdict and evidence the register holds as `repo`'s latest on the advisory, or None. Only used to
+        settle a verdict whose answer was lost."""
+
+    def check(self, scope: str, post: bool) -> list[Check]:
+        """`arceus-runner check`: it can be reached, its credentials are good for reading (and for receiving, with
+        `post`), and it covers the project, the code host's `scope`."""
+
+    def close(self) -> None:
+        """The runner stops: what the provider holds open (a client) is closed."""
+
+
 # -- registry --------------------------------------------------------------------------------------
 
 
@@ -428,8 +493,15 @@ class CodeHostType:
     build: Callable[..., CodeHost]
 
 
+@dataclass(frozen=True)
+class RegisterType:
+    config: type[AdvisoryRegisterConfig]
+    build: Callable[..., AdvisoryRegister]  # (section, its token_env's secret or None, http config, transport=None)
+
+
 BUILTIN_TRACKERS = {"youtrack": "arceus_runner.youtrack"}
 BUILTIN_CODE_HOSTS = {"gitlab": "arceus_runner.gitlab"}
+BUILTIN_REGISTERS = {"files": "arceus_runner.advisory_files"}
 _MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
 
@@ -459,6 +531,10 @@ def code_host_type(name: object) -> CodeHostType:
     return _provider("a code host", name, BUILTIN_CODE_HOSTS, "CODE_HOST")
 
 
+def register_type(name: object) -> RegisterType:
+    return _provider("an advisory register", name, BUILTIN_REGISTERS, "REGISTER")
+
+
 def build_tracker(cfg: Config, secrets: Secrets, transport=None) -> IssueTracker:
     return tracker_type(cfg.tracker.type).build(cfg.tracker, secrets.tracker, cfg.http, transport)
 
@@ -467,6 +543,11 @@ def build_code_host(cfg: Config, secrets: Secrets, transport=None) -> CodeHost:
     # The approver's token only when one is configured: a provider without approvals never sees the keyword.
     extra = {"approver_token": secrets.approver} if cfg.code_host.approver and secrets.approver else {}
     return code_host_type(cfg.code_host.type).build(cfg.code_host, secrets.code_host, cfg.http, transport, **extra)
+
+
+def build_register(cfg: Config, secrets: Secrets, transport=None) -> AdvisoryRegister:
+    section = cfg.secops.register_section
+    return register_type(section.type).build(section, secrets.register, cfg.http, transport)
 
 
 def usable_repos(cfg: Config, repos: list[Repo]) -> list[Repo]:

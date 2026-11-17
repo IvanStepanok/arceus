@@ -197,7 +197,7 @@ The parts the operator configures but rarely reads end to end:
 - [docs/cleanup.md](../docs/cleanup.md): what the runner removes between tasks and how to switch it on (`cleanup`);
 - [docs/security.md](../docs/security.md): the security screen (`security`) and the trust boundary;
 - [docs/agent-instructions.md](../docs/agent-instructions.md): the server notes, the project's notes and how they reach the agent;
-- [docs/integrations.md](../docs/integrations.md): trackers and code hosts, and adding one.
+- [docs/integrations.md](../docs/integrations.md): trackers, code hosts and advisory registers, and adding one.
 
 ## Not included yet
 

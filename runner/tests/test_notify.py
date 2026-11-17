@@ -534,6 +534,39 @@ def test_a_background_run_started_by_the_command_does_not_name_the_servers_user(
         assert started.splitlines()[0] == head and "srv-user-7" not in started.splitlines()[0]
 
 
+def triage_run(b: Bench) -> None:
+    """A triage run that starts and finishes, as its events tell it."""
+    run = b.store.add_run("secops", "schedule", "schedule", slot="2026-11-14T03:00:00+02:00")
+    b.events.emit("secops_dispatched", task_id=run.id, run=run.n, source="schedule", by="schedule")
+    b.events.emit("agent_quiet", task_id=run.id, minutes=20, ts="t1")
+    verdicts = [{"verdict": w} for w in ("affected", "needs_review", "needs_review", "not_affected")]
+    b.store.update_run(run.id, state="done", outcome="attention", result=json.dumps(
+        {"summary": "The platform image ships an affected acme-imagelib.", "verdicts": verdicts,
+         "sending": {"sent": 2, "known": 1, "refused": 1, "sending": 0, "unsent": 0, "why": None}}))
+    b.events.emit("secops_published", task_id=run.id, run=run.n, outcome="attention", url="http://localhost:3302/1/")
+
+
+def test_a_triage_run_tells_the_channel_nothing_while_its_slack_is_off(b):
+    assert b.cfg.secops.slack is False  # the default
+    triage_run(b)
+    assert b.flush() == []
+    told = [e["event"] for e in read_events(b.cfg.paths.events)]
+    assert "secops_dispatched" in told and "secops_published" in told  # events.jsonl has them either way
+
+
+def test_a_triage_run_with_its_slack_on_tells_its_start_and_result(b):
+    b.notifier.cfg = b.cfg.model_copy(update={"secops": b.cfg.secops.model_copy(update={"slack": True})})
+    triage_run(b)
+    started, quiet, told = b.flush()
+    assert started.splitlines()[0] == "🛡 Advisory triage started: run 1, on schedule."
+    assert "*the advisory triage, run 1*" in quiet
+    assert told.startswith("🛡 Advisory triage: 3 verdicts need attention: run 1 (1 affected, 2 needs review, "
+                           "1 not affected).")
+    assert "The platform image ships an affected acme-imagelib." in told
+    assert "Sent to the register: 2 (1 already there, 1 refused)." in told
+    assert "Report (through the SSH tunnel): http://localhost:3302/1/" in told
+
+
 def test_code_in_a_summary_shows_as_code_and_a_cut_inside_it_is_closed(b):
     summary = "The retry is in billing/retry.py:12 and `send()`. " + "The client in `" + "x" * 700 + "` too."
     run = b.store.add_run("arch", "command", "ops")

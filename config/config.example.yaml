@@ -189,6 +189,26 @@ architect:
   second_opinion_timeout: 20m
   port: 3301                     # 127.0.0.1 only
 
+# Optional. The agent reads the code against the open advisories of your advisory register and gives a verdict per
+# advisory and repository (docs/secops.md). `arceus-runner secops run` or `schedule`; changes nothing.
+# Reports: http://localhost:3302/ over an SSH tunnel, also with the console on (it has no section for them yet).
+secops:
+  enabled: false
+  # register:                     # required when enabled: where the advisories are (docs/secops.md)
+  #   type: files                  # built in: OSV records in a folder; or the module path of your own register
+  #   advisories: ~/arceus/data/secops/advisories      # one OSV record per .json file
+  #   verdicts: ~/arceus/data/secops/verdicts.json     # optional: the OpenVEX document verdicts go to with `post`
+  #   author: "ACME Security <security@example.com>"   # the document's author, required with verdicts
+  instructions: ~/arceus/data/secops/instructions.md   # optional notes on your stack; setup.sh creates a template
+  reports: ~/arceus/data/secops/runs                 # report.html, result.json per run
+  # schedule: { days: [sat], at: "03:00" }           # in schedule.timezone
+  timeout: 4h
+  # repos: []                    # which repositories are checked, as architect.repos; empty: every one
+  # skip: []                     # never checked
+  post: false                    # true: the verdicts go to the register; false: they stay in the report
+  slack: false                   # true: the project's channel hears the start and the result; false: nothing
+  port: 3302                     # 127.0.0.1 only
+
 # Removes what finished tasks left: containers, volumes, dev servers, files, media. Only things tied to a
 # task that is over (label arceus.task=<KEY>, .arceus/<kind>/<KEY>, its branch, or made while it held the
 # workspace). `arceus-runner cleanup` shows the plan.

@@ -19,9 +19,10 @@ from arceus_runner.db import RUN_UNDER_WAY
 HEALTH_VALUE = {"ok": 0, "warn": 1, "fail": 2}
 USAGE_FILES = {"claude": "usage.json", "codex": "codex-usage.json"}
 # A background agent's run on the "now" dashboard: its state's word and its title, and runner_agent_busy while it
-# holds the workspace.
-RUN_LABELS = {"qa": ("testing", "Platform test"), "arch": ("reviewing architecture", "Architecture review")}
-BUSY_RUN = {"qa": 2, "arch": 3}
+# holds the workspace. A triage run counts as working until the dashboards know it.
+RUN_LABELS = {"qa": ("testing", "Platform test"), "arch": ("reviewing architecture", "Architecture review"),
+              "secops": ("triaging advisories", "Advisory triage")}
+BUSY_RUN = {"qa": 2, "arch": 3, "secops": 1}
 WINDOWS = {"five_hour": "5h", "seven_day": "7d"}
 
 
@@ -33,8 +34,8 @@ class Metrics:
         self.health = Gauge("runner_health", "Health check: 0 ok, 1 warn, 2 fail", ["check"], registry=r)
         self.tasks = Gauge("runner_tasks", "Tasks the runner took, by runner state", ["state"], registry=r)
         self.queue = Gauge("runner_queue_length", "Accepted tickets waiting to be taken", registry=r)
-        self.busy = Gauge("runner_agent_busy", "1 while a task or a code review holds the agent, 2 while a test run of "
-                          "the platform does, 3 while an architecture review does", registry=r)
+        self.busy = Gauge("runner_agent_busy", "1 while a task, a code review or a triage run holds the agent, 2 "
+                          "while a test run of the platform does, 3 while an architecture review does", registry=r)
         self.can_take = Gauge("runner_can_take", "1 when health allows new work", registry=r)
         # role: tracker or code_host, so a dashboard reads them whichever provider config.yaml names.
         self.service_up = Gauge("runner_service_up", "1 when the service answers", ["service", "role"], registry=r)

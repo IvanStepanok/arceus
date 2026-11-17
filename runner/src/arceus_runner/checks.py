@@ -12,7 +12,7 @@ from typing import Literal
 
 from arceus_runner.config import Config, Secrets
 from arceus_runner.http import ServiceClient, ServiceError
-from arceus_runner.integrations import IssueTracker, build_code_host, build_tracker
+from arceus_runner.integrations import IssueTracker, build_code_host, build_register, build_tracker
 from arceus_runner.slack import Slack, SlackApiError
 
 Status = Literal["ok", "warn", "fail"]
@@ -74,13 +74,22 @@ def check_slack(cfg: Config, slack: Slack) -> list[Check]:
     return out
 
 
-def run_online_checks(cfg: Config, secrets: Secrets) -> list[Check]:
+def run_online_checks(cfg: Config, secrets: Secrets, register: bool = False) -> list[Check]:
+    """The tracker, the code host and Slack; with `register` (`arceus-runner check` only, never before `run`: an
+    optional service that is down keeps no ticket waiting), the advisory register too."""
     results: list[Check] = []
     tracker = build_tracker(cfg, secrets)
     host = build_code_host(cfg, secrets)
     try:
         results += _guard(tracker.name, lambda: check_tracker(cfg, tracker))
         results += _guard(host.name, lambda: host.check(cfg.health.token_expiry_warn_days))
+        if register and cfg.secops.enabled:
+            from arceus_runner.secops import check_register  # it imports this module
+            advisories = build_register(cfg, secrets)
+            try:
+                results += check_register(cfg, advisories, host.scope)
+            finally:
+                advisories.close()
         if cfg.slack and cfg.slack.alerts_channel:
             sc = slack_client(cfg, secrets)
             try:

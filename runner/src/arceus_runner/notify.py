@@ -11,6 +11,7 @@ questions in noise within the hour, and Slack takes about one message a second p
                                          needs changes, could not be confirmed
     a test run of the platform starts,   by command or on schedule; the outcome, the    once each, at once
     and when it finishes                 agent's short summary, the report's link
+    (an architecture review, and a triage run with secops.slack, likewise)
     a running task did something         tool calls (and how many came back with    at most every summary_every,
                                          an error), the engine's step, the latest   only when there was any,
                                                                                     in working hours by default
@@ -84,6 +85,14 @@ ARCH_HEADS = {"clean": "✅ Architecture review found nothing to raise",
               "found": "🏛 Architecture review: {n} finding{s}",
               "unchanged": "⚪️ Architecture review: nothing changed since the last one",
               "unfinished": "⚠️ Architecture review did not finish", "stopped": "⏹ Architecture review stopped"}
+# A finished triage run (secops.py), told only with secops.slack.
+SECOPS_HEADS = {"clear": "✅ Advisory triage: nothing needs attention",
+                "attention": "🛡 Advisory triage: {n} verdict{s} need{v} attention",
+                "partial": "☑️ Advisory triage: nothing needs attention in what was checked, but not all of it was "
+                           "checked",
+                "none_open": "⚪️ Advisory triage: no open advisory", "unfinished": "⚠️ Advisory triage did not finish",
+                "stopped": "⏹ Advisory triage stopped"}
+SECOPS_WORDS = ("affected", "needs_review", "fixed", "not_affected")
 REVIEW_HEADS = {"approved": "✅ Code review approved", "attention": "👀 Code review approved, a person has to look first",
                 "ready": "☑️ Code review found no problems, not everything is approved", "changes": "🛠 Code review: changes needed",
                 "unverified": "⚠️ Code review could not confirm", "nothing": "⚪️ Code review: nothing left to review",
@@ -100,8 +109,9 @@ DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
 def is_run(task_id: object) -> bool:
-    """A background agent's run (workspace_run.py), not a ticket: its engine task is qa-<n> or arch-<n>."""
-    return isinstance(task_id, str) and re.fullmatch(r"(?:qa|arch)-\d+", task_id) is not None
+    """A background agent's run (workspace_run.py), not a ticket: its engine task is qa-<n>, arch-<n> or
+    secops-<n>."""
+    return isinstance(task_id, str) and re.fullmatch(r"(?:qa|arch|secops)-\d+", task_id) is not None
 
 
 def esc(text: object) -> str:
@@ -479,7 +489,8 @@ class Notifier:
         """The ticket as a link with its title: `ACME-12 Fix the login form`; a test run as its number."""
         if is_run(task_id):
             kind, n = task_id.split("-", 1)
-            return f"*the {'platform test' if kind == 'qa' else 'architecture review'}, run {esc(n)}*"
+            noun = {"qa": "platform test", "arch": "architecture review"}.get(kind, "advisory triage")
+            return f"*the {noun}, run {esc(n)}*"
         task = task or self.store.task(task_id)
         key = task_id.split(".review-")[0]
         link = f"*<{self.issue_url(key)}|{esc(key)}>*"
@@ -497,6 +508,8 @@ class Notifier:
         if name.startswith("slack_"):
             return  # the notifier's and the sender's own lines: nothing to tell
         handler = getattr(self, f"_on_{name}", None)
+        if is_run(record.get("task_id")) and record["task_id"].startswith("secops-") and not self.cfg.secops.slack:
+            return  # advisory triage tells the channel nothing unless asked to (secops.slack)
         try:
             if handler:
                 handler(record)
@@ -643,6 +656,34 @@ class Notifier:
             lines.append(f"Why: {esc(clip(run.reason, 300))}")
         lines.append(report_line(r))
         self.put(f"arch:{run.id}:published", "arch_published", TRANSITION, "\n".join(lines))
+
+    def _on_secops_dispatched(self, r: dict) -> None:
+        self.put(f"secops:{r['task_id']}:started", "secops_started", TRANSITION,
+                 f"🛡 Advisory triage started: run {esc(r.get('run'))}{started_how(r)}.")
+
+    def _on_secops_published(self, r: dict) -> None:
+        run = self.store.run(r["task_id"]) if hasattr(self.store, "run") else None
+        if run is None:
+            return
+        result = json.loads(run.result or "{}")
+        words = Counter(v["verdict"] for v in result.get("verdicts") or [])
+        n = words["affected"] + words["needs_review"]
+        head = SECOPS_HEADS.get(run.outcome or "", "🛡 Advisory triage finished").format(
+            n=n, s="s" if n != 1 else "", v="" if n != 1 else "s")
+        counts = ", ".join(f"{words[w]} {w.replace('_', ' ')}" for w in SECOPS_WORDS if words[w])
+        lines = [f"{head}: run {run.n}" + (f" ({counts})." if counts else ".")]
+        if result.get("summary"):
+            lines.append(esc(summary_text(result["summary"], 600)))
+        sending = result.get("sending")
+        if sending:
+            done = [f"{sending[k]} {w}" for k, w in (("known", "already there"), ("refused", "refused"))
+                    if sending.get(k)]
+            lines.append(f"Sent to the register: {sending.get('sent', 0)}" + (f" ({', '.join(done)})" if done else "")
+                         + (f". Not sent: {esc(clip(sending['why'], 200))}" if sending.get("why") else "") + ".")
+        if run.reason and run.outcome not in ("clear", "attention", "none_open"):
+            lines.append(f"Why: {esc(clip(run.reason, 300))}")
+        lines.append(report_line(r))
+        self.put(f"secops:{run.id}:published", "secops_published", TRANSITION, "\n".join(lines))
 
     def _on_agent_activity(self, r: dict) -> None:
         a = self.activity.setdefault(r["task_id"], Activity())

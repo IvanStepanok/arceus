@@ -47,6 +47,7 @@ TITLES = {
     "review_agent": ("Code review on request", "/review on a ticket: what it checks per repository."),
     "qa": ("Test runs", "Testing the platform: on/off, schedule, where reports go."),
     "architect": ("Architecture reviews", "On/off, schedule, which repositories, what is not the team's."),
+    "secops": ("Advisory triage", "On/off, schedule, which repositories, whether verdicts go to the register."),
     "cleanup": ("Cleanup", "What is removed between tasks and when."),
     "console": ("Console", "This console's address, port, trusted proxies and sessions."),
     "metrics": ("Metrics", "The runner's Prometheus endpoint."),
@@ -64,7 +65,8 @@ SETUP_KEYS = ("console", "paths", "bulava.mcp_config", "metrics")
 LOCKED_KEYS = ("paths", "health.devstack_check", "bulava.mcp_config", "tracker.type", "tracker.url",
                "tracker.token_env", "code_host.type", "code_host.url", "code_host.token_env", "code_host.approver",
                "slack.token_env", "slack.webhook_env", "console", "metrics", "qa.instructions", "qa.reports",
-               "architect.instructions", "architect.reports")
+               "architect.instructions", "architect.reports", "secops.register", "secops.instructions",
+               "secops.reports")
 
 # Folders the console reads (cli._read_dirs): moved outside the data folder, setup.sh mounts them for it.
 MOUNTED_KEYS = ("qa.reports", "qa.instructions", "architect.reports", "architect.instructions")

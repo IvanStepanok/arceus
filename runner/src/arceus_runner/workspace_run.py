@@ -40,8 +40,9 @@ from arceus_runner.texts import ProjectNotesError, project_notes
 from arceus_runner.engine import EngineError, ReportReview
 from arceus_runner.gitops import HOME_BRANCH, GitError, restore_workspace
 from arceus_runner.http import ServiceError
+from arceus_runner.integrations import Repo
 from arceus_runner.replies import unattributed
-from arceus_runner.screening import trusted
+from arceus_runner.screening import MAX_CHARS, POLICY_VERSION, ScreenUnavailable, digest, mechanical_notes, trusted
 from arceus_runner.workspace import AgentContext
 
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -51,11 +52,22 @@ CONSOLE_PATHS = {"qa": "/qa/", "arch": "/architecture/"}
 MAX_INSTRUCTIONS = 64 * 1024  # without comments; the brief is one argv string, and Linux caps one at 128 KB
 
 
+def encodable(value):
+    """Text as UTF-8 can hold it, in lists and dicts too: a lone surrogate, which JSON lets through, becomes U+FFFD.
+    Text from outside is made so where it comes in, so no write of it fails later."""
+    if isinstance(value, str):
+        return re.sub("[\ud800-\udfff]", "\ufffd", value)
+    if isinstance(value, list):
+        return [encodable(v) for v in value]
+    return {encodable(k): encodable(v) for k, v in value.items()} if isinstance(value, dict) else value
+
+
 def clean_text(value: object, limit: int) -> str:
-    """Text the agent wrote, as a report may show it: plain, no model labels, bounded. Escaped when rendered."""
+    """Text the agent wrote, as a report may show it: plain, encodable, no model labels, bounded. Escaped when
+    rendered."""
     if not isinstance(value, str):
         return ""
-    text = unattributed(value).strip()
+    text = unattributed(encodable(value)).strip()
     return text if len(text) <= limit else text[:limit].rstrip() + " …"
 
 
@@ -87,12 +99,27 @@ def read_instructions(path: Path, required: bool = True) -> tuple[str | None, st
 
 def report_address(cfg: Config, kind: str, port: int, n: int | None = None) -> tuple[str, bool]:
     """Where a kind's reports are read, and whether that is through the SSH tunnel: the console's page while the
-    console is on (the runner then serves no report pages of its own), the runner's page on localhost otherwise. No
-    run number: the list of them."""
+    console is on and has a section for the kind (the runner then serves no report pages of it), the runner's page on
+    localhost otherwise. No run number: the list of them."""
     tail = f"{n}/" if n is not None else ""
-    if cfg.console.enabled:
+    if cfg.console.enabled and kind in CONSOLE_PATHS:  # a kind the console has no section for: the runner's page
         return cfg.console.public_url.rstrip("/") + CONSOLE_PATHS[kind] + tail, False
     return f"http://localhost:{port}/{tail}", True
+
+
+def link_code(refs: list[dict], snap: dict, host) -> None:
+    """Each code reference ({repo, file, line}) given the commit the run read (`sha`) and its link on the code host
+    (`url`, "" when there is none)."""
+    repos = {r["repo"]: r for r in snap.get("repos") or []}
+    file_url = getattr(host, "file_url", None)
+    for c in refs:
+        r = repos.get(c["repo"])
+        c["sha"] = r["sha"] if r else ""
+        c["url"] = ""
+        if r and r["sha"] and file_url:
+            c["url"] = file_url(Repo(id=0, path=r["repo"].rsplit("/", 1)[-1], relative_path=r["repo"],
+                                     default_branch=r["default"], archived=False, http_url=r["http_url"]),
+                                r["sha"], c["file"], c["line"])
 
 
 def write_atomic(path: Path, text: str) -> None:
@@ -184,6 +211,57 @@ class WorkspaceRun:
         if self._waiting.get(run.id) != seen:
             self._waiting[run.id] = seen
             self.emit("waits", task_id=run.id, run=run.n, reason=reason, **fields)
+
+    def _cleared(self, text: str, ref: str, kind: str, message: dict) -> str:
+        """Why a text that is not a ticket's may not reach the agent, or "" when the security screen clears it.
+        `message` says to the classifier where it comes from (screening.Gate). The verdict is kept per text, so the
+        same text is screened once; one the screen does not clear, or cannot read now, is left out, never held: there
+        is no ticket to hold it on."""
+        if len(text) > MAX_CHARS:
+            return f"it is longer than the security screen reads ({MAX_CHARS} characters)"
+        key = digest(text)
+        row = self.store.screening(key)
+        if row is None:
+            gate = getattr(self.d, "gate", None)
+            if gate is None:
+                return "no security screen runs here"
+            notes, hold = mechanical_notes(text)
+            try:
+                verdict = gate.classify({**message, "notes": notes, "payload": text})
+            except (ScreenUnavailable, ValueError):
+                return "the security screen did not answer"
+            decision = "review" if hold and verdict.decision == "allow" else verdict.decision
+            row = self.store.save_screening(key, ref, kind, decision, list(verdict.categories), verdict.reason,
+                                            verdict.model, POLICY_VERSION, self.d.now().isoformat())
+            self.emit("screened", ref=ref, kind=kind, code=key[:12], verdict=decision)
+        return "" if row["verdict"] == "allow" else "the security screen did not clear it"
+
+    def _check_refs(self, snap: dict, items: list[dict], problems: list[str], name, bare=lambda f: False) -> list[dict]:
+        """Every code reference (`where`) against the commit the run read: a file that is not there, or a line past
+        its end, goes. An item with none left goes too, unless `bare` lets it stand without naming code. `name` says
+        which item a problem is about."""
+        ws = self.cfg.paths.workspace
+        shas = {r["repo"]: r["sha"] for r in snap.get("repos") or []}
+        kept = []
+        for f in items:
+            good = []
+            for c in f["where"]:
+                sha = shas.get(c["repo"])
+                try:
+                    lines = self.git.blob_lines(ws / c["repo"], sha, c["file"]) if sha else None
+                except GitError:
+                    lines = None
+                if lines is None or (c["line"] and c["line"] > max(lines, 1)):
+                    where = f"{c['repo']}/{c['file']}" + (f":{c['line']}" if c["line"] else "")
+                    problems.append(f"{name(f)}: {where} is not in the code at the commit read")
+                    continue
+                good.append(c)
+            if not good and not (bare(f) and not f["where"]):
+                problems.append(f"{name(f)} is left out: " + ("none of the code it names exists at the commit read"
+                                                              if f["where"] else "it names no code"))
+                continue
+            kept.append({**f, "where": good})
+        return kept
 
     # -- the schedule ---------------------------------------------------------------------------------
 
