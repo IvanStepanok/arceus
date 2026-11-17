@@ -47,7 +47,7 @@
       <li><span class="tag busy">{{ t.words }}</span><span class="what"><a href="/tasks/{{ t.key }}/">{{ t.key }}</a> {{ t.summary }}<span class="note">record changed {{ t.since|when }}{% if t.author %} · tagged by {{ t.author }}{% endif %}{% if t.url %} · <a href="{{ t.url }}" target="_blank" rel="noopener">ticket<span class="external" aria-hidden="true">↗</span><span class="sr"> (opens in a new tab)</span></a>{% endif %}</span></span></li>
       {% endfor %}
       {% for r in db.runs %}
-      <li><span class="tag {{ 'busy' if r.holds else 'quiet' }}">{{ "Running" if r.holds else ("Queued" if r.state == "pending" else "Finishing") }}</span><span class="what">{% if r.kind in ("qa", "arch") %}<a href="{{ '/qa/' if r.kind == 'qa' else '/architecture/' }}{{ r.n }}/">{{ r.label }}, run {{ r.n }}</a>{% else %}{{ r.label }}, run {{ r.n }}{% endif %}{% if r.stop %} · stop asked{% endif %}<span class="note">{{ r.since|when }}{% if r.by and r.by != "schedule" %} · by {{ r.by }}{% endif %}</span></span></li>
+      <li><span class="tag {{ 'busy' if r.holds else 'quiet' }}">{{ "Running" if r.holds else ("Queued" if r.state == "pending" else "Finishing") }}</span><span class="what">{% if kind_paths[r.kind] in ctx.app.sections %}<a href="{{ kind_paths[r.kind] }}{{ r.n }}/">{{ r.label }}, run {{ r.n }}</a>{% else %}{{ r.label }}, run {{ r.n }}{% endif %}{% if r.stop %} · stop asked{% endif %}<span class="note">{{ r.since|when }}{% if r.by and r.by != "schedule" %} · by {{ r.by }}{% endif %}</span></span></li>
       {% endfor %}
     </ul>
     {% else %}

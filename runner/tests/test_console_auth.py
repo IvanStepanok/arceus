@@ -269,13 +269,14 @@ def test_env_for_setup_names_the_address_the_folders_to_read_and_the_secrets_to_
     raw = yaml.safe_load(setup.config_path.read_text())
     raw["console"] = {"enabled": True, "public_url": "https://console.example.com", "port": 8080}
     raw["qa"] = {"enabled": True, "reports": "/srv/qa-runs"}
+    raw["secops"] = {"reports": "/srv/secops-runs"}
     setup.config_path.write_text(yaml.safe_dump(raw))
     assert console_cli.main(["--config", str(setup.config_path), "console", "env"]) == 0
     lines = [line.split("=", 1) for line in capsys.readouterr().out.splitlines()]
     env = dict(lines)
     assert env["CONSOLE_PUBLIC_URL"] == "https://console.example.com" and env["CONSOLE_PORT"] == "8080"
     assert env["CONSOLE_LISTEN"] == ""  # every address, as before
-    assert ["CONSOLE_READ_DIR", "/srv/qa-runs"] in lines
+    assert ["CONSOLE_READ_DIR", "/srv/qa-runs"] in lines and ["CONSOLE_READ_DIR", "/srv/secops-runs"] in lines
     assert ["CONSOLE_SECRET_FILE", str(setup.config_path.parent / "secrets.env")] in lines
 
 

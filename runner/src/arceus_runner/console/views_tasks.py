@@ -3,7 +3,8 @@
 requests with the commit Codex passed, and the code reviews asked for on it.
 
 Development, research and code review of people's merge requests are kinds of task, so they share this page; a test
-run of the platform and an architecture review have theirs under /qa/ and /architecture/ (runs.status_page).
+run of the platform, an architecture review and a triage run have theirs under /qa/, /architecture/ and /secops/
+(runs.status_page).
 
 The page reads runner.db read-only and the runner's metrics (execution.py). Reloading it repeats nothing: every action
 on a task (an answer, `/continue`, a security decision) stays on the ticket."""

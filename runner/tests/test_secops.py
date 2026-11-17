@@ -14,12 +14,12 @@ from pydantic import ValidationError
 
 from arceus_runner import qa_report, secops
 from arceus_runner.checks import Check, run_online_checks
-from arceus_runner.config import Config, ConfigError, ConsoleConfig, Secrets, load_secrets
+from arceus_runner.config import Config, ConfigError, Secrets, load_secrets
 from arceus_runner.http import AuthError, TransientError
 from arceus_runner.integrations import Advisory, Id, RepoAt, build_register
 from arceus_runner.metrics import Metrics
 from arceus_runner.screening import ScreenUnavailable, Verdict
-from arceus_runner.workspace_run import read_instructions, report_address
+from arceus_runner.workspace_run import read_instructions
 
 from .conftest import GL_TOKEN, YT_TOKEN, example_raw
 from .test_architect import no_real_tools, push  # noqa: F401 (a fixture of its own)
@@ -520,12 +520,9 @@ def test_check_asks_the_register_about_the_code_hosts_scope_and_run_does_not_ask
         Check("secops.register", "fail", "memregister: the token is not good for reading")]
 
 
-def test_the_reports_are_served_by_the_runner_and_linked_there_also_with_the_console_on(make):
+def test_with_the_console_off_the_reports_are_served_by_the_runner_and_linked_there(make):
     w = make()
     queue(w)
-    console = w.cfg.model_copy(update={"console": ConsoleConfig(enabled=True,
-                                                                public_url="https://console.example.com")})
-    assert report_address(console, "secops", 3302, 1) == ("http://localhost:3302/1/", True)
     assert w.events_named("secops_published")[0]["url"] == "http://localhost:3302/1/"
     port, stop = qa_report.serve(w.cfg.secops.reports, "127.0.0.1", 0, index=lambda: secops.index_page(w.cfg))
     try:

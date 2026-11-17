@@ -47,8 +47,9 @@ from arceus_runner.workspace import AgentContext
 
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 SLOT_GRACE = timedelta(hours=1)   # a scheduled time is queued within this long after it, never later
-# Where the console shows a kind's reports (console/views_qa.py, views_arch.py): its routes are at the root.
-CONSOLE_PATHS = {"qa": "/qa/", "arch": "/architecture/"}
+# Where the console shows a kind's reports (console/views_qa.py, views_arch.py, views_secops.py): its routes are at
+# the root.
+CONSOLE_PATHS = {"qa": "/qa/", "arch": "/architecture/", "secops": "/secops/"}
 MAX_INSTRUCTIONS = 64 * 1024  # without comments; the brief is one argv string, and Linux caps one at 128 KB
 
 
@@ -99,10 +100,10 @@ def read_instructions(path: Path, required: bool = True) -> tuple[str | None, st
 
 def report_address(cfg: Config, kind: str, port: int, n: int | None = None) -> tuple[str, bool]:
     """Where a kind's reports are read, and whether that is through the SSH tunnel: the console's page while the
-    console is on and has a section for the kind (the runner then serves no report pages of it), the runner's page on
-    localhost otherwise. No run number: the list of them."""
+    console is on (the runner then serves no report pages), the runner's page on localhost otherwise. No run number:
+    the list of them."""
     tail = f"{n}/" if n is not None else ""
-    if cfg.console.enabled and kind in CONSOLE_PATHS:  # a kind the console has no section for: the runner's page
+    if cfg.console.enabled:
         return cfg.console.public_url.rstrip("/") + CONSOLE_PATHS[kind] + tail, False
     return f"http://localhost:{port}/{tail}", True
 

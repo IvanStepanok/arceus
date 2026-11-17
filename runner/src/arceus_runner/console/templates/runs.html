@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% from "macros.html" import flash, csrf_field %}
-{% set base = "/qa/" if kind == "qa" else "/architecture/" %}
+{% set base = kind_paths[kind] %}
 {% block body %}
 <h1>{{ title }}</h1>
-<p class="lede">{% if kind == "qa" %}The agent tests the whole platform in a browser by a scenario's instructions and writes a report with steps, screenshots and the suspected cause in the code.{% else %}The agent reads what changed since the last review and how it fits with the rest; Codex checks each finding before the report goes out.{% endif %}{% if schedule %} On schedule: {{ schedule.days|join(", ") }} at {{ schedule.at.strftime("%H:%M") }}.{% endif %}</p>
+<p class="lede">{% if kind == "qa" %}The agent tests the whole platform in a browser by a scenario's instructions and writes a report with steps, screenshots and the suspected cause in the code.{% elif kind == "secops" %}The agent reads the code against the open advisories of the advisory register and gives a verdict per advisory and repository, with its evidence. A run is started on the server (<code class="lit">arceus-runner secops run</code>) or by its schedule.{% else %}The agent reads what changed since the last review and how it fits with the rest; Codex checks each finding before the report goes out.{% endif %}{% if schedule %} On schedule: {{ schedule.days|join(", ") }} at {{ schedule.at.strftime("%H:%M") }}.{% endif %}</p>
 {{ flash(notice, error) }}
 {% if not enabled %}
-<p class="notice warn">{% if kind == "qa" %}Test runs{% else %}Architecture reviews{% endif %} are off in config.yaml ({{ "qa" if kind == "qa" else "architect" }}.enabled: false): none start. The earlier reports are still here.</p>
+<p class="notice warn">{% if kind == "secops" %}Advisory triage is off in config.yaml (secops.enabled: false): no run starts{% else %}{% if kind == "qa" %}Test runs{% else %}Architecture reviews{% endif %} are off in config.yaml ({{ "qa" if kind == "qa" else "architect" }}.enabled: false): none start{% endif %}. The earlier reports are still here.</p>
 {% elif mode != "live" %}
 <p class="notice warn">The runner is in mode: {{ mode }}, which starts nothing: a queued run waits until it is live.</p>
 {% endif %}
@@ -41,7 +41,7 @@
 <h2 class="runs-h">Runs</h2>
 {% endif %}
 
-{% if kind != "qa" %}
+{% if kind == "arch" %}
 <div class="toolbar">
   {% if can_run and enabled %}
   <form method="post" action="{{ base }}">{{ csrf_field(csrf) }}<button class="btn primary" type="submit">{% if kind == "qa" %}Start a test run{% else %}Start a review{% endif %}</button></form>

@@ -32,6 +32,7 @@ from starlette.routing import Route
 from arceus_runner.config import Config, ConfigError, load_config, parse_duration
 from arceus_runner.console import auth
 from arceus_runner.console.store import ConsoleError, ConsoleStore, Session, User
+from arceus_runner.workspace_run import CONSOLE_PATHS
 
 HERE = Path(__file__).resolve().parent
 MAX_FORM = 2 * 1024 * 1024  # a settings form or an instructions file; nginx refuses bigger bodies first
@@ -223,8 +224,9 @@ def same_origin(request: Request, settings: Settings) -> bool:
 
 # The bar at the top: address, words, who sees it. Only the sections this console serves are shown.
 SECTIONS = [("/", "Home", "view"), ("/tasks/", "Tasks", "view"), ("/qa/", "Test runs", "view"), ("/architecture/", "Architecture", "view"),
-            ("/grafana/", "Monitoring", "view"), ("/settings/", "Settings", "settings.view"),
-            ("/operations/", "Operations", "ops.view"), ("/users/", "People", "users.manage")]
+            ("/secops/", "Advisory triage", "view"), ("/grafana/", "Monitoring", "view"),
+            ("/settings/", "Settings", "settings.view"), ("/operations/", "Operations", "ops.view"),
+            ("/users/", "People", "users.manage")]
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'self'; "
@@ -247,6 +249,7 @@ class ConsoleApp:
                                      autoescape=select_autoescape(["html"]), trim_blocks=True, lstrip_blocks=True)
         self.templates.globals["can"] = auth.can
         self.templates.globals["role_words"] = auth.ROLE_WORDS
+        self.templates.globals["kind_paths"] = CONSOLE_PATHS  # a run's kind -> its section: qa -> /qa/
         self.templates.filters["when"] = self.when
         self.templates.filters["at"] = self.at
         self.session_cookie = "__Host-arceus" if settings.secure else "arceus"
@@ -372,12 +375,13 @@ async def healthz(_request: Request) -> Response:
 
 
 def create_app(settings: Settings | None = None) -> Starlette:
-    from arceus_runner.console import (views_arch, views_auth, views_home, views_ops, views_qa, views_settings,
-                                       views_tasks, views_users)
+    from arceus_runner.console import (views_arch, views_auth, views_home, views_ops, views_qa, views_secops,
+                                       views_settings, views_tasks, views_users)
     settings = settings or Settings.from_env()
     console = ConsoleApp(settings)
     routes = [Route("/static/{name}", static), Route("/healthz", healthz)]
-    for module in (views_auth, views_home, views_tasks, views_qa, views_arch, views_settings, views_ops, views_users):
+    for module in (views_auth, views_home, views_tasks, views_qa, views_arch, views_secops, views_settings, views_ops,
+                   views_users):
         routes += module.routes()
         console.sections.update(getattr(module, "SECTIONS", ()))
     app = Starlette(routes=routes)
