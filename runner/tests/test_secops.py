@@ -468,6 +468,24 @@ def test_a_run_that_did_not_finish_or_whose_report_did_not_pass_its_review_sends
     assert result(w, "secops-2")["sending"]["why"] == "the run did not finish"
 
 
+def test_a_report_longer_than_its_closing_review_reads_sends_nothing(make):
+    # The review reads the first 60 000 characters: a verdict past them was never reviewed, however the review ended.
+    w = make(post=True)
+    two_advisories(w)
+    queue(w)
+    report(w, aside="x" * 60_000)
+    assert (out_dir(w) / "verdicts.json").stat().st_size > 60_000
+    finish(w)
+    assert w.register.sent == [] and w.store.run(RID).outcome == "attention"
+    assert result(w)["sending"]["why"] == ("the report is longer than the 60000 bytes its closing review reads, so "
+                                           "not all of it was reviewed")
+    assert "the end of the report was not reviewed" in result(w)["doubts"]
+    queue(w)
+    report(w, "secops-2")  # the same verdicts in a report read whole go
+    finish(w, "secops-2")
+    assert sent(w) == [11]
+
+
 def test_a_run_under_way_when_triage_is_switched_off_sends_nothing_and_work_goes_on(make):
     w = make(post=True)
     two_advisories(w)

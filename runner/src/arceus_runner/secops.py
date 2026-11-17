@@ -190,7 +190,8 @@ def _load_verdicts(folder: Path, names: dict[Id, str], scope: set[str], limit: i
     return {
         "summary": clean_text(data.get("summary"), 1500),
         "checked": list(checked.values()),
-        "verdicts": verdicts
+        "verdicts": verdicts,
+        "unreviewed_end": size > ENGINE_READS  # what its closing review did not read: nothing of it is sent
     }, list(dict.fromkeys(problems))
 
 
@@ -209,7 +210,8 @@ def outcome_of(found: dict, problems: list[str], fatal: list[str], stopped: bool
               *([f"{left_out} advisor{'ies' if left_out != 1 else 'y'} left out before the triage"]
                 if left_out else []),
               *(["part of the agent's report was left out"] if problems else []),
-              *(["the report did not pass its closing review"] if found.get("engine_disputed") else [])]
+              *(["the report did not pass its closing review"] if found.get("engine_disputed") else []),
+              *(["the end of the report was not reviewed"] if found.get("unreviewed_end") else [])]
 
     if any(v["verdict"] in ATTENTION for v in found["verdicts"]):
         return "attention", doubts
@@ -428,6 +430,8 @@ class SecOpsAgent(WorkspaceRun):
         why = ("secops.post is off: the verdicts stay in this report" if not snap.get("post") else
                "the run did not finish" if run.outcome not in COMPLETE else
                "the report did not pass its closing review" if result.get("engine_disputed") else
+               f"the report is longer than the {ENGINE_READS} bytes its closing review reads, so not all of it was "
+               "reviewed" if result.get("unreviewed_end") else
                "advisory triage was switched off before they were sent" if self.register is None else
                "the register takes no verdicts (secops.register is read-only)" if not self.register.receives else None)
 
